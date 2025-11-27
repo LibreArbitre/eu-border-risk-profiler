@@ -1,4 +1,5 @@
-requests 
-pandas 
-psycopg2-binary 
+requests
+pandas
+psycopg2-binary
 SQLAlchemy
+schedule
