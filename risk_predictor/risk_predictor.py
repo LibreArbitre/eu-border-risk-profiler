@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import pickle
 import sys
 import time
 import schedule
@@ -40,6 +41,20 @@ DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NA
 
 MODEL_NAME = "random_forest_risk"
 MODEL_HYPERPARAMS = {"n_estimators": 50, "random_state": 42}
+
+# Define SQLAlchemy table for model registry
+metadata = MetaData()
+model_registry_table = Table(
+    'model_registry',
+    metadata,
+    Column('id', Integer, primary_key=True),
+    Column('model_name', String(100), nullable=False),
+    Column('geo_code', String(10), nullable=False),
+    Column('model_version', String(50), nullable=False),
+    Column('trained_at', DateTime, nullable=False),
+    Column('hyperparameters', JSON),
+    Column('model_artifact', LargeBinary, nullable=False)
+)
 
 def get_db_engine():
     return create_engine(DATABASE_URL)
@@ -330,10 +345,11 @@ def run_job():
     success = True
     message = ""
     try:
+        engine = get_db_engine()
         df = get_data_from_db()
         if df.empty:
             raise ValueError("No data found in DB.")
-        preds = calculate_risk_and_predict(df)
+        preds = calculate_risk_and_predict(df, engine)
         save_predictions(preds)
     except Exception as exc:  # noqa: PERF203 logging
         success = False

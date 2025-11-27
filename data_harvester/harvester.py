@@ -32,12 +32,7 @@ BASE_URL = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/
 PARAMS = {
     'format': 'JSON',
     'lang': 'en',
-    'applicant': 'NASY_APP',
-    'age': 'TOTAL',
-    'sex': 'T',
-    'unit': 'PER',
-    'citizen': 'TOTAL',
-    'lastTimePeriod': '60'
+    'lastTimePeriod': '24'  # Simplified: filter in Python to avoid 0 results
 }
 
 
@@ -77,85 +72,146 @@ def get_db_engine():
 
 @retry("Eurostat fetch")
 def fetch_eurostat_data():
-    logging.info("Fetching data from Eurostat...")
-    response = requests.get(BASE_URL, params=PARAMS, timeout=30)
-    response.raise_for_status()
-    return response.json()
+    """
+    Fetch data from Eurostat API country by country to avoid 413 Payload Too Large.
+    The API has strict size limits, so we fetch each EU country separately.
+    """
+    logging.info("Fetching data from Eurostat (country by country)...")
+    
+    # Liste des pays UE + quelques pays associés
+    EU_COUNTRIES = [
+        'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR',
+        'DE', 'EL', 'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL',
+        'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE'
+    ]
+    
+    all_data = []
+    
+    for country in EU_COUNTRIES:
+        try:
+            params = {
+                'format': 'JSON',
+                'lang': 'en',
+                'geo': country,
+                'lastTimePeriod': '24'  # 2 years of data per country
+            }
+            logging.info(f"Fetching data for {country}...")
+            response = requests.get(BASE_URL, params=params, timeout=30)
+            response.raise_for_status()
+            country_data = response.json()
+            all_data.append(country_data)
+        except Exception as e:
+            logging.warning(f"Failed to fetch data for {country}: {e}")
+            # Continue with other countries even if one fails
+            continue
+    
+    if not all_data:
+        raise ValueError("No data fetched from any country")
+    
+    logging.info(f"Successfully fetched data for {len(all_data)} countries")
+    return all_data
 
-def parse_eurostat_json(data):
+
+def parse_eurostat_json(data_list):
     """
     Parses Eurostat JSON-stat format into a list of records.
+    Now accepts a list of JSON responses (one per country).
     """
-    if not data or 'value' not in data or 'dimension' not in data:
+    if not data_list:
         return pd.DataFrame()
-
-    # Extract dimensions
-    dims = data['dimension']
-    ids = data['id'] # Order of dimensions e.g. ['freq', 'unit', 'asyl_app', 'age', 'sex', 'citizen', 'geo', 'time']
-
-    values = data['value']
-    dimensions_map = {}
-    sizes = []
-
-    # Prepare dimension mappings
-    for dim_id in ids:
-        dim_info = dims[dim_id]
-        # category['index'] maps Code -> Index (e.g. 'FR' -> 5)
-        idx_map = dim_info['category']['index']
-        # We need Index -> Code
-        inv_map = {int(v): k for k, v in idx_map.items()}
-        dimensions_map[dim_id] = inv_map
-        sizes.append(len(inv_map))
-
-    records = []
-
-    # Calculate strides for index decoding
-    strides = [1] * len(sizes)
-    for i in range(len(sizes) - 2, -1, -1):
-        strides[i] = strides[i+1] * sizes[i+1]
-
-    # Iterate over values
-    for k, v in values.items():
-        try:
-            idx = int(k)
-        except ValueError:
+    
+    logging.info(f"Parsing {len(data_list)} country responses...")
+    all_records = []
+    
+    # Traiter chaque pays
+    for data in data_list:
+        # Log structure for debugging
+        if data:
+            value_count = len(data.get('value', {})) if isinstance(data.get('value'), dict) else 0
+            logging.info(f"Country data has {value_count} values")
+        logging.info(f"Processing country data. Has value: {'value' in data}, Has dimension: {'dimension' in data}")
+        if not data or 'value' not in data or 'dimension' not in data or not data.get('value'):
+            logging.warning(f"Skipping data: empty={not data}, no_value={'value' not in data if data else 'N/A'}, no_dim={'dimension' not in data if data else 'N/A'}")
             continue
 
-        coords = {}
+        # Extract dimensions
+        dims = data['dimension']
+        ids = data['id']
 
-        # Decode index into dimension codes
-        for i, dim_id in enumerate(ids):
-            # Coordinate index for this dimension
-            pos = (idx // strides[i]) % sizes[i]
-            # Map back to code
-            coords[dim_id] = dimensions_map[dim_id][pos]
+        values = data['value']
+        dimensions_map = {}
+        sizes = []
 
-        # Extract relevant fields
-        time_str = coords.get('time')
-        geo = coords.get('geo')
-        citizen = coords.get('citizen')
-        app_type = coords.get('asyl_app')
+        # Prepare dimension mappings
+        for dim_id in ids:
+            dim_info = dims[dim_id]
+            idx_map = dim_info['category']['index']
+            inv_map = {int(v): k for k, v in idx_map.items()}
+            dimensions_map[dim_id] = inv_map
+            sizes.append(len(inv_map))
 
-        # Convert time 2023M01 to 2023-01-01
-        if time_str and 'M' in time_str:
-            y, m = time_str.split('M')
-            date_str = f"{y}-{m}-01"
-        else:
-            continue
+        # Calculate strides for index decoding
+        strides = [1] * len(sizes)
+        for i in range(len(sizes) - 2, -1, -1):
+            strides[i] = strides[i+1] * sizes[i+1]
 
-        records.append({
-            'date': date_str,
-            'geo_code': geo,
-            'citizen_code': citizen,
-            'applicant_type': app_type,
-            'total_applications': v
-        })
+        # Iterate over values
+        sample_logged = False
+        for k, v in values.items():
+            try:
+                idx = int(k)
+            except ValueError:
+                continue
 
-    return pd.DataFrame(records)
+            coords = {}
+
+            # Decode index into dimension codes
+            for i, dim_id in enumerate(ids):
+                pos = (idx // strides[i]) % sizes[i]
+                coords[dim_id] = dimensions_map[dim_id][pos]
+
+            # Extract relevant fields
+            time_str = coords.get('time')
+            geo = coords.get('geo')
+            citizen = coords.get('citizen')
+            app_type = coords.get('asyl_app')
+            
+            # Log first record to see structure
+            if not sample_logged:
+                logging.info(f"Sample coords: time={time_str}, geo={geo}, citizen={citizen}, app_type={app_type}, value={v}")
+                logging.info(f"All coord keys: {list(coords.keys())}")
+                sample_logged = True
+
+            # Convert time 2023M01 to 2023-01-01
+            if time_str and 'M' in time_str:
+                y, m = time_str.split('M')
+                date_str = f"{y}-{m:0>2}-01"  # Pad month with 0
+            else:
+                if not sample_logged:
+                    logging.warning(f"Skipping record: invalid time format: {time_str}")
+                continue
+
+            all_records.append({
+                'date': date_str,
+                'geo_code': geo,
+                'citizen_code': citizen,
+                'applicant_type': app_type,
+                'total_applications': v
+            })
+
+    return pd.DataFrame(all_records)
 
 def clean_data(df):
     if df.empty:
         return df
+    
+    # Filter for first-time applicants (NASY_APP) and TOTAL citizenship
+    # This filtering was moved from API params to Python to avoid 0 results
+    if 'applicant_type' in df.columns:
+        df = df[df['applicant_type'] == 'NASY_APP'].copy()
+    if 'citizen_code' in df.columns:
+        df = df[df['citizen_code'] == 'TOTAL'].copy()
+    
     # Ensure numeric
     df['total_applications'] = pd.to_numeric(df['total_applications'], errors='coerce').fillna(0).astype(int)
     return df
