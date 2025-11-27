@@ -145,9 +145,9 @@ def calculate_risk_and_predict(df):
             features = np.array([current_lags[0], current_lags[1], current_lags[2], next_month]).reshape(1, -1)
             # Handle NaN in features? (Should not happen if last_row is valid)
             if np.isnan(features).any():
-                 pred = 0
+                pred = 0
             else:
-                 pred = model.predict(features)[0]
+                pred = model.predict(features)[0]
 
             predictions.append({
                 'date': last_date.date(),
@@ -189,6 +189,7 @@ def check_health():
     except Exception:
         logging.exception("Error reading health file")
     return False
+
 
 @retry("DB save")
 def save_predictions(df):
@@ -241,6 +242,7 @@ def save_predictions(df):
         logging.exception("DB Error")
         raise e
 
+
 def run_job():
     logging.info("--- Starting Risk Predictor Job ---")
     success = True
@@ -262,6 +264,7 @@ def run_job():
         write_health(success, message)
     logging.info("--- Job Finished ---")
 
+
 def start_scheduler():
     run_job()
     # Run every day
@@ -271,6 +274,7 @@ def start_scheduler():
     while True:
         schedule.run_pending()
         time.sleep(60)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Risk predictor service")
