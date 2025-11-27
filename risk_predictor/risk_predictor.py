@@ -1,5 +1,7 @@
+import argparse
+import logging
 import os
-import pickle
+import sys
 import time
 import schedule
 import pandas as pd
@@ -29,6 +31,11 @@ DB_NAME = os.getenv('DB_NAME', 'eubrp_db')
 DB_HOST = os.getenv('DB_HOST', 'db')
 DB_PORT = os.getenv('DB_PORT', '5432')
 
+RETRY_MAX_ATTEMPTS = int(os.getenv('RETRY_MAX_ATTEMPTS', '3'))
+RETRY_BACKOFF_SECONDS = float(os.getenv('RETRY_BACKOFF_SECONDS', '2'))
+EXIT_ON_FAILURE = os.getenv('EXIT_ON_FAILURE', 'true').lower() == 'true'
+HEALTH_FILE = os.getenv('PREDICTOR_HEALTH_FILE', '/tmp/predictor_health')
+
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 MODEL_NAME = "random_forest_risk"
@@ -37,30 +44,44 @@ MODEL_HYPERPARAMS = {"n_estimators": 50, "random_state": 42}
 def get_db_engine():
     return create_engine(DATABASE_URL)
 
-metadata = MetaData()
+def configure_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+    )
 
-model_registry_table = Table(
-    'model_registry',
-    metadata,
-    Column('id', Integer, primary_key=True),
-    Column('model_name', String(100), nullable=False),
-    Column('geo_code', String(10), nullable=False),
-    Column('model_version', String(50), nullable=False),
-    Column('trained_at', DateTime, nullable=False),
-    Column('hyperparameters', JSON, nullable=True),
-    Column('model_artifact', LargeBinary, nullable=False)
-)
 
-def get_data_from_db(engine):
-    print("Fetching data from DB...", flush=True)
-    try:
-        # Fetch only NASY_APP (First Time Applicants)
-        query = "SELECT date, geo_code, total_applications FROM asylum_data WHERE applicant_type = 'NASY_APP' ORDER BY date"
-        df = pd.read_sql(query, engine)
-        return df
-    except Exception as e:
-        print(f"Error reading DB: {e}", flush=True)
-        return pd.DataFrame()
+def retry(operation_name):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            delay = RETRY_BACKOFF_SECONDS
+            for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as exc:  # noqa: PERF203 acceptable for logging context
+                    logging.warning(
+                        "%s failed on attempt %s/%s: %s",
+                        operation_name,
+                        attempt,
+                        RETRY_MAX_ATTEMPTS,
+                        exc,
+                    )
+                    if attempt == RETRY_MAX_ATTEMPTS:
+                        raise
+                    time.sleep(delay)
+                    delay *= 2
+        return wrapper
+    return decorator
+
+
+@retry("DB read")
+def get_data_from_db():
+    logging.info("Fetching data from DB...")
+    engine = get_db_engine()
+    # Fetch only NASY_APP (First Time Applicants)
+    query = "SELECT date, geo_code, total_applications FROM asylum_data WHERE applicant_type = 'NASY_APP' ORDER BY date"
+    df = pd.read_sql(query, engine)
+    return df
 
 def load_latest_model(engine, geo_code):
     try:
@@ -142,7 +163,7 @@ def calculate_risk_and_predict(df, engine):
     # Ensure date is datetime
     df['date'] = pd.to_datetime(df['date'])
 
-    print(f"Processing {len(df['geo_code'].unique())} countries...", flush=True)
+    logging.info("Processing %s countries...", len(df['geo_code'].unique()))
 
     for geo, group in df.groupby('geo_code'):
         if len(group) < 12:
@@ -225,12 +246,40 @@ def calculate_risk_and_predict(df, engine):
 
     return pd.DataFrame(predictions)
 
-def save_predictions(df, engine):
+
+def write_health(status: bool, message: str = ""):
+    payload = {
+        "status": "healthy" if status else "unhealthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "message": message,
+    }
+    try:
+        with open(HEALTH_FILE, 'w', encoding='utf-8') as f:
+            f.write(str(payload))
+    except Exception:
+        logging.exception("Failed to write health status")
+
+
+def check_health():
+    try:
+        with open(HEALTH_FILE, 'r', encoding='utf-8') as f:
+            data = f.read()
+            if 'healthy' in data:
+                return True
+    except FileNotFoundError:
+        logging.error("Health file not found at %s", HEALTH_FILE)
+    except Exception:
+        logging.exception("Error reading health file")
+    return False
+
+@retry("DB save")
+def save_predictions(df):
     if df.empty:
-        print("No predictions to save.", flush=True)
+        logging.info("No predictions to save.")
         return
 
-    print(f"Saving {len(df)} predictions...", flush=True)
+    engine = get_db_engine()
+    logging.info("Saving %s predictions...", len(df))
 
     try:
         with engine.connect() as conn:
@@ -265,35 +314,57 @@ def save_predictions(df, engine):
                     conn.execute(stmt)
 
                 trans.commit()
-                print("Predictions saved.", flush=True)
+                logging.info("Predictions saved.")
             except Exception as e:
                 trans.rollback()
-                print(f"Error saving predictions: {e}", flush=True)
+                logging.exception("Error saving predictions")
+                raise e
     except Exception as e:
-        print(f"DB Error: {e}", flush=True)
+        logging.exception("DB Error")
+        raise e
 
 def run_job():
-    print(f"--- Starting Risk Predictor Job at {datetime.now()} ---", flush=True)
-    engine = get_db_engine()
-    df = get_data_from_db(engine)
-    if not df.empty:
-        preds = calculate_risk_and_predict(df, engine)
-        save_predictions(preds, engine)
-    else:
-        print("No data found in DB.", flush=True)
-    print("--- Job Finished ---", flush=True)
+    logging.info("--- Starting Risk Predictor Job ---")
+    success = True
+    message = ""
+    try:
+        df = get_data_from_db()
+        if df.empty:
+            raise ValueError("No data found in DB.")
+        preds = calculate_risk_and_predict(df)
+        save_predictions(preds)
+    except Exception as exc:  # noqa: PERF203 logging
+        success = False
+        message = str(exc)
+        logging.exception("Risk predictor job failed")
+        if EXIT_ON_FAILURE:
+            write_health(False, message)
+            sys.exit(1)
+    finally:
+        write_health(success, message)
+    logging.info("--- Job Finished ---")
 
 def start_scheduler():
     run_job()
     # Run every day
     schedule.every().day.at("03:00").do(run_job)
 
-    print("Risk Predictor Scheduler started.", flush=True)
+    logging.info("Risk Predictor Scheduler started.")
     while True:
         schedule.run_pending()
         time.sleep(60)
 
 if __name__ == "__main__":
-    print("Risk Predictor Service Starting...", flush=True)
+    parser = argparse.ArgumentParser(description="Risk predictor service")
+    parser.add_argument("--healthcheck", action="store_true", help="Run healthcheck and exit")
+    args = parser.parse_args()
+
+    configure_logging()
+
+    if args.healthcheck:
+        healthy = check_health()
+        sys.exit(0 if healthy else 1)
+
+    logging.info("Risk Predictor Service Starting...")
     time.sleep(15) # Wait for Harvester?
     start_scheduler()

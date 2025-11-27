@@ -17,6 +17,17 @@ DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NA
 
 engine = create_engine(DATABASE_URL)
 
+
+@app.get("/health")
+def healthcheck():
+    """Healthcheck endpoint verifying DB connectivity."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ok"}
+    except Exception as exc:  # pragma: no cover - used for runtime checks
+        raise HTTPException(status_code=503, detail=str(exc))
+
 @app.get("/api/v1/risk/latest")
 def get_latest_risk():
     """Returns the latest calculated risk score for each country."""
