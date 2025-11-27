@@ -1,4 +1,7 @@
+import argparse
+import logging
 import os
+import sys
 import time
 import schedule
 import requests
@@ -14,6 +17,11 @@ DB_PASSWORD = os.getenv('DB_PASSWORD', 'password')
 DB_NAME = os.getenv('DB_NAME', 'eubrp_db')
 DB_HOST = os.getenv('DB_HOST', 'db')
 DB_PORT = os.getenv('DB_PORT', '5432')
+
+RETRY_MAX_ATTEMPTS = int(os.getenv('RETRY_MAX_ATTEMPTS', '3'))
+RETRY_BACKOFF_SECONDS = float(os.getenv('RETRY_BACKOFF_SECONDS', '2'))
+EXIT_ON_FAILURE = os.getenv('EXIT_ON_FAILURE', 'true').lower() == 'true'
+HEALTH_FILE = os.getenv('HARVESTER_HEALTH_FILE', '/tmp/harvester_health')
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
@@ -32,18 +40,47 @@ PARAMS = {
     'lastTimePeriod': '60'
 }
 
+
+def configure_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+    )
+
+
+def retry(operation_name):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            delay = RETRY_BACKOFF_SECONDS
+            for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as exc:  # noqa: PERF203 acceptable for logging context
+                    logging.warning(
+                        "%s failed on attempt %s/%s: %s",
+                        operation_name,
+                        attempt,
+                        RETRY_MAX_ATTEMPTS,
+                        exc,
+                    )
+                    if attempt == RETRY_MAX_ATTEMPTS:
+                        raise
+                    time.sleep(delay)
+                    delay *= 2
+        return wrapper
+    return decorator
+
+
 def get_db_engine():
     return create_engine(DATABASE_URL)
 
+
+@retry("Eurostat fetch")
 def fetch_eurostat_data():
-    print(f"[{datetime.now()}] Fetching data from Eurostat...", flush=True)
-    try:
-        response = requests.get(BASE_URL, params=PARAMS)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        print(f"Error fetching data: {e}", flush=True)
-        return None
+    logging.info("Fetching data from Eurostat...")
+    response = requests.get(BASE_URL, params=PARAMS, timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 def parse_eurostat_json(data):
     """
@@ -123,14 +160,15 @@ def clean_data(df):
     df['total_applications'] = pd.to_numeric(df['total_applications'], errors='coerce').fillna(0).astype(int)
     return df
 
+@retry("DB save")
 def save_to_db(df):
     if df.empty:
-        print("No data to save.", flush=True)
+        logging.info("No data to save.")
         return
 
     engine = get_db_engine()
 
-    print(f"Saving {len(df)} records to DB...", flush=True)
+    logging.info("Saving %s records to DB...", len(df))
 
     try:
         with engine.connect() as conn:
@@ -163,23 +201,63 @@ def save_to_db(df):
                     conn.execute(stmt)
 
                 trans.commit()
-                print("Data saved successfully.", flush=True)
+                logging.info("Data saved successfully.")
             except Exception as e:
                 trans.rollback()
-                print(f"Error saving to DB: {e}", flush=True)
+                logging.exception("Error saving to DB")
                 raise e
     except Exception as e:
-         print(f"DB Connection failed: {e}", flush=True)
+         logging.exception("DB Connection failed")
+         raise e
+
+
+def write_health(status: bool, message: str = ""):
+    payload = {
+        "status": "healthy" if status else "unhealthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "message": message,
+    }
+    try:
+        with open(HEALTH_FILE, 'w', encoding='utf-8') as f:
+            f.write(str(payload))
+    except Exception:
+        logging.exception("Failed to write health status")
+
+
+def check_health():
+    try:
+        with open(HEALTH_FILE, 'r', encoding='utf-8') as f:
+            data = f.read()
+            if 'healthy' in data:
+                return True
+    except FileNotFoundError:
+        logging.error("Health file not found at %s", HEALTH_FILE)
+    except Exception:
+        logging.exception("Error reading health file")
+    return False
 
 def run_harvest():
-    print(f"--- Starting Harvest Job at {datetime.now()} ---", flush=True)
-    data_json = fetch_eurostat_data()
-    if data_json:
+    logging.info("--- Starting Harvest Job ---")
+    success = True
+    message = ""
+    try:
+        data_json = fetch_eurostat_data()
+        if not data_json:
+            raise ValueError("No data returned from Eurostat")
         df = parse_eurostat_json(data_json)
-        print(f"Parsed {len(df)} records.", flush=True)
+        logging.info("Parsed %s records.", len(df))
         df = clean_data(df)
         save_to_db(df)
-    print("--- Harvest Job Finished ---", flush=True)
+    except Exception as exc:  # noqa: PERF203 logging
+        success = False
+        message = str(exc)
+        logging.exception("Harvest job failed")
+        if EXIT_ON_FAILURE:
+            write_health(False, message)
+            sys.exit(1)
+    finally:
+        write_health(success, message)
+    logging.info("--- Harvest Job Finished ---")
 
 def start_scheduler():
     # Run once immediately
@@ -188,13 +266,23 @@ def start_scheduler():
     # Schedule every day
     schedule.every().day.at("02:00").do(run_harvest)
 
-    print("Scheduler started. Waiting for jobs...", flush=True)
+    logging.info("Scheduler started. Waiting for jobs...")
     while True:
         schedule.run_pending()
         time.sleep(60)
 
 if __name__ == "__main__":
-    print("Data Harvester Service Starting...", flush=True)
+    parser = argparse.ArgumentParser(description="Data harvester service")
+    parser.add_argument("--healthcheck", action="store_true", help="Run healthcheck and exit")
+    args = parser.parse_args()
+
+    configure_logging()
+
+    if args.healthcheck:
+        healthy = check_health()
+        sys.exit(0 if healthy else 1)
+
+    logging.info("Data Harvester Service Starting...")
     # Wait for DB to be ready (rudimentary check or just sleep)
     time.sleep(10)
     start_scheduler()

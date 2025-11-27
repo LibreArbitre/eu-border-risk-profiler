@@ -30,17 +30,27 @@ services:
       context: ./data_harvester
       dockerfile: Dockerfile
     container_name: eu_brp_harvester
+    restart: on-failure
     # S'assure que la BDD est prête avant de démarrer le Harvester
     depends_on:
       db:
-        condition: service_healthy 
+        condition: service_healthy
     environment:
       DB_HOST: db 
       DB_USER: ${DB_USER:-user}
       DB_PASSWORD: ${DB_PASSWORD:-password}
       DB_NAME: ${DB_NAME:-eubrp_db}
+      RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-3}
+      RETRY_BACKOFF_SECONDS: ${RETRY_BACKOFF_SECONDS:-2}
+      EXIT_ON_FAILURE: ${EXIT_ON_FAILURE:-true}
+      HARVESTER_HEALTH_FILE: ${HARVESTER_HEALTH_FILE:-/tmp/harvester_health}
     # Command: exécute le script (peut être remplacé par un scheduler en production)
     command: python /app/harvester.py
+    healthcheck:
+      test: ["CMD-SHELL", "python /app/harvester.py --healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - eubrp_net
 
@@ -50,16 +60,26 @@ services:
       context: ./risk_predictor
       dockerfile: Dockerfile
     container_name: eu_brp_predictor
+    restart: on-failure
     # Dépend du Harvester pour s'assurer que les données existent
     depends_on:
       data_harvester:
-        condition: service_completed_successfully 
+        condition: service_completed_successfully
     environment:
       DB_HOST: db
       DB_USER: ${DB_USER:-user}
       DB_PASSWORD: ${DB_PASSWORD:-password}
       DB_NAME: ${DB_NAME:-eubrp_db}
+      RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-3}
+      RETRY_BACKOFF_SECONDS: ${RETRY_BACKOFF_SECONDS:-2}
+      EXIT_ON_FAILURE: ${EXIT_ON_FAILURE:-true}
+      PREDICTOR_HEALTH_FILE: ${PREDICTOR_HEALTH_FILE:-/tmp/predictor_health}
     command: python /app/risk_predictor.py
+    healthcheck:
+      test: ["CMD-SHELL", "python /app/risk_predictor.py --healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - eubrp_net
 
