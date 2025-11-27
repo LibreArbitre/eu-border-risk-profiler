@@ -1,7 +1,8 @@
-fastapi 
-uvicorn[standard] 
-streamlit 
-plotly 
-psycopg2-binary 
-SQLAlchemy 
+fastapi
+uvicorn[standard]
+streamlit
+plotly
+psycopg2-binary
+SQLAlchemy
 pydantic
+requests
