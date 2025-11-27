@@ -1,0 +1,7 @@
+pandas 
+numpy 
+psycopg2-binary 
+SQLAlchemy 
+scikit-learn 
+# Optionnel : prophet si vous préférez ce modèle
+# prophet

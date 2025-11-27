@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  # 1. Agent: Base de Données PostGreSQL (Stockage des données brutes et des prédictions)
+  db:
+    image: postgres:15-alpine
+    container_name: eu_brp_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: ${DB_NAME:-eubrp_db}
+    # Initialisation du schéma de la BDD lors du premier démarrage
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db_init/db_schema.sql:/docker-entrypoint-initdb.d/db_schema.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - eubrp_net
+
+  # 2. Agent: Data_Harvester (Récolte et nettoyage des données Eurostat)
+  data_harvester:
+    build:
+      context: ./data_harvester
+      dockerfile: Dockerfile
+    container_name: eu_brp_harvester
+    # S'assure que la BDD est prête avant de démarrer le Harvester
+    depends_on:
+      db:
+        condition: service_healthy 
+    environment:
+      DB_HOST: db 
+      DB_USER: ${DB_USER:-user}
+      DB_PASSWORD: ${DB_PASSWORD:-password}
+      DB_NAME: ${DB_NAME:-eubrp_db}
+    # Command: exécute le script (peut être remplacé par un scheduler en production)
+    command: python /app/harvester.py
+    networks:
+      - eubrp_net
+
+  # 3. Agent: Risk_Predictor (Calcul du risque et entraînement du modèle IA)
+  risk_predictor:
+    build:
+      context: ./risk_predictor
+      dockerfile: Dockerfile
+    container_name: eu_brp_predictor
+    # Dépend du Harvester pour s'assurer que les données existent
+    depends_on:
+      data_harvester:
+        condition: service_completed_successfully 
+    environment:
+      DB_HOST: db
+      DB_USER: ${DB_USER:-user}
+      DB_PASSWORD: ${DB_PASSWORD:-password}
+      DB_NAME: ${DB_NAME:-eubrp_db}
+    command: python /app/risk_predictor.py
+    networks:
+      - eubrp_net
+
+  # 4. Agent: API_Service (FastAPI Backend et Streamlit Frontend)
+  api_service:
+    build:
+      context: ./api_service
+      dockerfile: Dockerfile
+    container_name: eu_brp_api
+    depends_on:
+      risk_predictor:
+        condition: service_completed_successfully 
+    environment:
+      DB_HOST: db
+      DB_USER: ${DB_USER:-user}
+      DB_PASSWORD: ${DB_PASSWORD:-password}
+      DB_NAME: ${DB_NAME:-eubrp_db}
+    ports:
+      - "8000:8000"
+      - "8501:8501"
+    # Lance l'API FastAPI et le dashboard Streamlit en arrière-plan
+    command: /bin/sh -c "uvicorn main:app --host 0.0.0.0 --port 8000 & streamlit run dashboard.py --server.port 8501 --server.enableCORS false"
+    networks:
+      - eubrp_net
+
+# Volumes pour la persistance des données
+volumes:
+  db_data:
+
+# Réseau interne pour la communication des services
+networks:
+  eubrp_net:
+    driver: bridge

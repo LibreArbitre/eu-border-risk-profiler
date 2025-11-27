@@ -1,0 +1,31 @@
+-- Fichier: db_init/db_schema.sql
+
+-- TABLE 1: Données brutes d'asile (alimentée par Data_Harvester)
+CREATE TABLE IF NOT EXISTS asylum_data (
+    id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    geo_code VARCHAR(10) NOT NULL,       -- Code Pays (e.g., FR, DE)
+    citizen_code VARCHAR(10) NOT NULL,   -- Code Nationalité
+    applicant_type VARCHAR(50) NOT NULL, -- Type de demandeur (e.g., FIRST_TIME)
+    total_applications INTEGER,          -- Nombre total de demandes
+    extraction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexation pour optimiser la recherche de données brutes
+CREATE UNIQUE INDEX idx_unique_data ON asylum_data (date, geo_code, citizen_code, applicant_type);
+
+
+-- TABLE 2: Scores de risque et Prédictions (alimentée par Risk_Predictor)
+CREATE TABLE IF NOT EXISTS risk_predictions (
+    id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,                          -- Date de la donnée source (Mois Analysé)
+    geo_code VARCHAR(10) NOT NULL,
+    risk_score_calculated NUMERIC(5, 2) NOT NULL, -- Score de risque pondéré (0.00 à 100.00)
+    prediction_target_month DATE NOT NULL,       -- Mois prédit (M+1, M+2, M+3)
+    predicted_risk_score NUMERIC(5, 2),
+    model_version VARCHAR(50),                   -- Version du modèle utilisé (ex: v1.0.1)
+    prediction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index pour optimiser la recherche par pays et par date de prédiction
+CREATE UNIQUE INDEX idx_unique_prediction ON risk_predictions (geo_code, prediction_target_month);
