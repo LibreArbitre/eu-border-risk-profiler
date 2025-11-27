@@ -6,9 +6,21 @@ import time
 import schedule
 import pandas as pd
 import numpy as np
-from sqlalchemy import create_engine
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    Integer,
+    LargeBinary,
+    MetaData,
+    Table,
+    String,
+    create_engine,
+    select,
+    table,
+    column,
+)
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import table, column
 from sklearn.ensemble import RandomForestRegressor
 from datetime import datetime
 
@@ -25,6 +37,9 @@ EXIT_ON_FAILURE = os.getenv('EXIT_ON_FAILURE', 'true').lower() == 'true'
 HEALTH_FILE = os.getenv('PREDICTOR_HEALTH_FILE', '/tmp/predictor_health')
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+MODEL_NAME = "random_forest_risk"
+MODEL_HYPERPARAMS = {"n_estimators": 50, "random_state": 42}
 
 def get_db_engine():
     return create_engine(DATABASE_URL)
@@ -68,7 +83,78 @@ def get_data_from_db():
     df = pd.read_sql(query, engine)
     return df
 
-def calculate_risk_and_predict(df):
+def load_latest_model(engine, geo_code):
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                select(
+                    model_registry_table.c.id,
+                    model_registry_table.c.model_artifact
+                )
+                .where(
+                    (model_registry_table.c.model_name == MODEL_NAME)
+                    & (model_registry_table.c.geo_code == geo_code)
+                )
+                .order_by(model_registry_table.c.trained_at.desc())
+                .limit(1)
+            ).fetchone()
+
+            if result:
+                return pickle.loads(result.model_artifact), result.id
+    except Exception as e:
+        print(f"Error loading persisted model for {geo_code}: {e}", flush=True)
+
+    return None, None
+
+
+def persist_model(engine, geo_code, model):
+    try:
+        payload = {
+            'model_name': MODEL_NAME,
+            'geo_code': geo_code,
+            'model_version': datetime.utcnow().strftime("v%Y%m%d%H%M%S"),
+            'trained_at': datetime.utcnow(),
+            'hyperparameters': MODEL_HYPERPARAMS,
+            'model_artifact': pickle.dumps(model)
+        }
+
+        with engine.begin() as conn:
+            result = conn.execute(
+                insert(model_registry_table)
+                .returning(model_registry_table.c.id),
+                [payload]
+            )
+            model_id = result.scalar()
+            print(f"Persisted new model for {geo_code} with id {model_id}", flush=True)
+            return model_id
+    except Exception as e:
+        print(f"Error persisting model for {geo_code}: {e}", flush=True)
+        return None
+
+
+def train_model(train_df):
+    model = RandomForestRegressor(**MODEL_HYPERPARAMS)
+    model.fit(train_df[['lag_1', 'lag_2', 'lag_3', 'month']], train_df['risk_score'])
+    return model
+
+
+def get_or_train_model(engine, geo_code, train_df):
+    model, model_id = load_latest_model(engine, geo_code)
+
+    if model and model_id:
+        print(f"Loaded persisted model {model_id} for {geo_code}", flush=True)
+        return model, model_id
+
+    model = train_model(train_df)
+    model_id = persist_model(engine, geo_code, model)
+
+    if model_id is None:
+        raise RuntimeError(f"Failed to persist model for {geo_code}")
+
+    return model, model_id
+
+
+def calculate_risk_and_predict(df, engine):
     if df.empty:
         return pd.DataFrame()
 
@@ -120,11 +206,7 @@ def calculate_risk_and_predict(df):
         if len(train_df) < 6:
             continue
 
-        X = train_df[['lag_1', 'lag_2', 'lag_3', 'month']]
-        y = train_df['risk_score']
-
-        model = RandomForestRegressor(n_estimators=50, random_state=42)
-        model.fit(X, y)
+        model, model_id = get_or_train_model(engine, geo, train_df)
 
         # Predict for M+1, M+2, M+3 from the LAST available point
         last_row = group.iloc[-1]
@@ -155,7 +237,7 @@ def calculate_risk_and_predict(df):
                 'risk_score_calculated': float(current_score),
                 'prediction_target_month': next_date.date(),
                 'predicted_risk_score': float(pred),
-                'model_version': 'v1.0-RF'
+                'model_id': model_id
             })
 
             # Shift lags
@@ -210,7 +292,7 @@ def save_predictions(df):
                     column('risk_score_calculated'),
                     column('prediction_target_month'),
                     column('predicted_risk_score'),
-                    column('model_version')
+                    column('model_id')
                 )
 
                 data_to_insert = df.to_dict(orient='records')
@@ -226,7 +308,7 @@ def save_predictions(df):
                             'risk_score_calculated': stmt.excluded.risk_score_calculated,
                             'predicted_risk_score': stmt.excluded.predicted_risk_score,
                             'date': stmt.excluded.date, # Update source date
-                            'model_version': stmt.excluded.model_version
+                            'model_id': stmt.excluded.model_id
                         }
                     )
                     conn.execute(stmt)

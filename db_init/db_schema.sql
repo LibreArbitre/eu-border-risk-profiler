@@ -16,6 +16,18 @@ CREATE UNIQUE INDEX idx_unique_data ON asylum_data (date, geo_code, citizen_code
 
 
 -- TABLE 2: Scores de risque et Prédictions (alimentée par Risk_Predictor)
+CREATE TABLE IF NOT EXISTS model_registry (
+    id SERIAL PRIMARY KEY,
+    model_name VARCHAR(100) NOT NULL,            -- Nom logique du modèle (ex: random_forest_risk)
+    geo_code VARCHAR(10) NOT NULL,               -- Portée du modèle (par pays)
+    model_version VARCHAR(50) NOT NULL,          -- Version générée à l'entraînement
+    trained_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    hyperparameters JSONB,                       -- Hyperparamètres utilisés lors de l'entraînement
+    model_artifact BYTEA NOT NULL                -- Binaire sérialisé du modèle (pickle)
+);
+
+CREATE UNIQUE INDEX idx_model_registry_geo_version ON model_registry (model_name, geo_code, model_version);
+
 CREATE TABLE IF NOT EXISTS risk_predictions (
     id SERIAL PRIMARY KEY,
     date DATE NOT NULL,                          -- Date de la donnée source (Mois Analysé)
@@ -23,7 +35,7 @@ CREATE TABLE IF NOT EXISTS risk_predictions (
     risk_score_calculated NUMERIC(5, 2) NOT NULL, -- Score de risque pondéré (0.00 à 100.00)
     prediction_target_month DATE NOT NULL,       -- Mois prédit (M+1, M+2, M+3)
     predicted_risk_score NUMERIC(5, 2),
-    model_version VARCHAR(50),                   -- Version du modèle utilisé (ex: v1.0.1)
+    model_id INTEGER REFERENCES model_registry(id), -- Identifiant du modèle utilisé
     prediction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
