@@ -1,184 +1,335 @@
-"""
-HARVESTER AVEC DONNÉES SYNTHÉTIQUES RÉALISTES
-Génère des données d'asile basées sur des patterns réels européens
-
-Avantages:
-- Fonctionne 100% du temps
-- Données pour TOUS les 27 pays UE
-- Patterns réalistes (tendances, variations)
-- Parfait pour POC/Demo
-"""
-import os
+import argparse
 import logging
+import os
+import sys
 import time
 from datetime import datetime, timedelta
+from typing import Dict, Iterable, List
+
 import pandas as pd
-import numpy as np
-from sqlalchemy import create_engine
+import requests
+import schedule
+from sqlalchemy import column, create_engine, table
+from sqlalchemy.dialects.postgresql import insert
 
-# Configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s'
-)
+DB_USER = os.getenv("DB_USER", "user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
+DB_NAME = os.getenv("DB_NAME", "eubrp_db")
+DB_HOST = os.getenv("DB_HOST", "db")
+DB_PORT = os.getenv("DB_PORT", "5432")
 
-# 27 pays UE
-EU_COUNTRIES = {
-    'DE': {'name': 'Germany', 'base': 50000, 'variation': 0.3},
-    'FR': {'name': 'France', 'base': 40000, 'variation': 0.25},
-    'IT': {'name': 'Italy', 'base': 35000, 'variation': 0.3},
-    'ES': {'name': 'Spain', 'base': 30000, 'variation': 0.25},
-    'EL': {'name': 'Greece', 'base': 25000, 'variation': 0.4},
-    'AT': {'name': 'Austria', 'base': 12000, 'variation': 0.2},
-    'BE': {'name': 'Belgium', 'base': 10000, 'variation': 0.2},
-    'NL': {'name': 'Netherlands', 'base': 15000, 'variation': 0.2},
-    'SE': {'name': 'Sweden', 'base': 18000, 'variation': 0.25},
-    'PL': {'name': 'Poland', 'base': 5000, 'variation': 0.3},
-    'CZ': {'name': 'Czechia', 'base': 3000, 'variation': 0.2},
-    'RO': {'name': 'Romania', 'base': 2500, 'variation': 0.25},
-    'BG': {'name': 'Bulgaria', 'base': 3500, 'variation': 0.3},
-    'HU': {'name': 'Hungary', 'base': 2000, 'variation': 0.2},
-    'PT': {'name': 'Portugal', 'base': 4000, 'variation': 0.2},
-    'DK': {'name': 'Denmark', 'base': 6000, 'variation': 0.15},
-    'FI': {'name': 'Finland', 'base': 5000, 'variation': 0.2},
-    'SK': {'name': 'Slovakia', 'base': 1500, 'variation': 0.2},
-    'IE': {'name': 'Ireland', 'base': 4500, 'variation': 0.2},
-    'HR': {'name': 'Croatia', 'base': 2000, 'variation': 0.25},
-    'SI': {'name': 'Slovenia', 'base': 1800, 'variation': 0.2},
-    'LT': {'name': 'Lithuania', 'base': 1500, 'variation': 0.25},
-    'LV': {'name': 'Latvia', 'base': 1200, 'variation': 0.2},
-    'EE': {'name': 'Estonia', 'base': 1000, 'variation': 0.2},
-    'CY': {'name': 'Cyprus', 'base': 8000, 'variation': 0.3},
-    'LU': {'name': 'Luxembourg', 'base': 1500, 'variation': 0.15},
-    'MT': {'name': 'Malta', 'base': 3000, 'variation': 0.3}
-}
+RETRY_MAX_ATTEMPTS = int(os.getenv("RETRY_MAX_ATTEMPTS", "3"))
+RETRY_BACKOFF_SECONDS = float(os.getenv("RETRY_BACKOFF_SECONDS", "2"))
+EXIT_ON_FAILURE = os.getenv("EXIT_ON_FAILURE", "true").lower() == "true"
+HEALTH_FILE = os.getenv("HARVESTER_HEALTH_FILE", "/tmp/harvester_health")
+MONTHS_TO_FETCH = int(os.getenv("HARVESTER_MONTHS", "60"))
+TIME_CHUNK_SIZE = int(os.getenv("HARVESTER_TIME_CHUNK", "12"))
+
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+BASE_URL = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/migr_asyappctzm"
+EU_COUNTRIES = [
+    "AT",
+    "BE",
+    "BG",
+    "HR",
+    "CY",
+    "CZ",
+    "DK",
+    "EE",
+    "FI",
+    "FR",
+    "DE",
+    "EL",
+    "HU",
+    "IE",
+    "IT",
+    "LV",
+    "LT",
+    "LU",
+    "MT",
+    "NL",
+    "PL",
+    "PT",
+    "RO",
+    "SK",
+    "SI",
+    "ES",
+    "SE",
+]
+
+
+def configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def retry(operation_name: str):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            delay = RETRY_BACKOFF_SECONDS
+            for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as exc:  # noqa: PERF203 acceptable for logging
+                    logging.warning(
+                        "%s failed on attempt %s/%s: %s",
+                        operation_name,
+                        attempt,
+                        RETRY_MAX_ATTEMPTS,
+                        exc,
+                    )
+                    if attempt == RETRY_MAX_ATTEMPTS:
+                        raise
+                    time.sleep(delay)
+                    delay *= 2
+
+        return wrapper
+
+    return decorator
+
 
 def get_db_engine():
-    """Connexion PostgreSQL"""
-    db_host = os.getenv('DB_HOST', 'db')
-    db_user = os.getenv('DB_USER', 'user')
-    db_pass = os.getenv('DB_PASSWORD', 'password')
-    db_name = os.getenv('DB_NAME', 'eubrp_db')
-    
-    return create_engine(f'postgresql://{db_user}:{db_pass}@{db_host}:5432/{db_name}')
+    return create_engine(DATABASE_URL)
 
-def generate_realistic_data():
-    """
-    Génère des données d'asile réalistes pour 27 pays UE
-    Période: 24 derniers mois
-    """
-    logging.info("Generating synthetic asylum data...")
-    
-    # Dates: 24 derniers mois
-    end_date = datetime.now().replace(day=1)
-    start_date = end_date - timedelta(days=730)  # ~24 mois
-    
-    dates = pd.date_range(start=start_date, end=end_date, freq='MS')
-    
+
+def build_time_periods(months: int) -> List[str]:
+    end_date = datetime.utcnow().replace(day=1)
+    start_date = end_date - timedelta(days=months * 30)
+    periods = []
+    current = end_date
+    while current >= start_date:
+        periods.append(f"{current.year}M{current.month:02d}")
+        current -= timedelta(days=30)
+    return sorted(set(periods))
+
+
+def chunk_iterable(items: Iterable[str], size: int) -> Iterable[List[str]]:
+    chunk: List[str] = []
+    for item in items:
+        chunk.append(item)
+        if len(chunk) == size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
+@retry("Eurostat fetch")
+def fetch_country_period(country: str, times: List[str]) -> Dict:
+    params = {
+        "format": "JSON",
+        "lang": "en",
+        "geo": country,
+        "time": ",".join(times),
+    }
+    logging.info("Fetching %s for periods %s", country, ",".join(times))
+    response = requests.get(BASE_URL, params=params, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def fetch_eurostat_data() -> List[Dict]:
+    time_periods = list(build_time_periods(MONTHS_TO_FETCH))
+    all_payloads: List[Dict] = []
+
+    for country in EU_COUNTRIES:
+        for time_chunk in chunk_iterable(time_periods, TIME_CHUNK_SIZE):
+            try:
+                payload = fetch_country_period(country, time_chunk)
+            except Exception as exc:  # noqa: PERF203 logging
+                logging.warning("Skipping chunk for %s (%s): %s", country, ",".join(time_chunk), exc)
+                continue
+
+            if payload and payload.get("value"):
+                all_payloads.append(payload)
+            else:
+                logging.info("No data returned for %s (%s)", country, ",".join(time_chunk))
+
+    if not all_payloads:
+        raise ValueError("No data fetched from Eurostat")
+
+    logging.info("Fetched %s payloads from Eurostat", len(all_payloads))
+    return all_payloads
+
+
+def parse_eurostat_json(payloads: List[Dict]) -> pd.DataFrame:
+    if not payloads:
+        return pd.DataFrame()
+
     records = []
-    total_generated = 0
-    
-    # Pour chaque pays
-    for geo_code, info in EU_COUNTRIES.items():
-        base_applications = info['base']
-        variation = info['variation']
-        
-        # Générer série temporelle avec tendance + saisonnalité
-        for i, date in enumerate(dates):
-            # Tendance générale (légère diminution depuis 2023)
-            trend = 1.0 - (i / len(dates)) * 0.15
-            
-            # Saisonnalité (plus de demandes en été/automne)
-            month = date.month
-            seasonal = 1.0 + 0.1 * np.sin((month - 3) * np.pi / 6)
-            
-            # Variation aléatoire
-            random_var = np.random.normal(1.0, variation)
-            
-            # Calcul final
-            applications = int(base_applications * trend * seasonal * random_var / 12)
-            applications = max(0, applications)  # Pas de valeurs négatives
-            
-            records.append({
-                'date': date.strftime('%Y-%m-%d'),
-                'geo_code': geo_code,
-                'citizen_code': 'TOTAL',
-                'applicant_type': 'FRST',
-                'total_applications': applications
-            })
-            total_generated += 1
-    
-    df = pd.DataFrame(records)
-    
-    logging.info(f"Generated {total_generated} records for {len(EU_COUNTRIES)} countries")
-    logging.info(f"Date range: {df['date'].min()} to {df['date'].max()}")
-    logging.info(f"Total applications (sum): {df['total_applications'].sum():,}")
-    
-    # Statistiques par pays
-    country_stats = df.groupby('geo_code')['total_applications'].agg(['sum', 'mean'])
-    logging.info(f"Top 5 countries by total: \\n{country_stats.sort_values('sum', ascending=False).head()}")
-    
+    for payload in payloads:
+        if not payload or "value" not in payload or "dimension" not in payload:
+            continue
+
+        dims = payload["dimension"]
+        ids = payload.get("id", [])
+        values = payload.get("value", {})
+
+        dimensions_map: Dict[str, Dict[int, str]] = {}
+        sizes: List[int] = []
+        for dim_id in ids:
+            dim_info = dims[dim_id]
+            idx_map = dim_info["category"]["index"]
+            inv_map = {int(v): k for k, v in idx_map.items()}
+            dimensions_map[dim_id] = inv_map
+            sizes.append(len(inv_map))
+
+        strides = [1] * len(sizes)
+        for i in range(len(sizes) - 2, -1, -1):
+            strides[i] = strides[i + 1] * sizes[i + 1]
+
+        for raw_index, value in values.items():
+            idx = int(raw_index)
+            coords: Dict[str, str] = {}
+            for i, dim_id in enumerate(ids):
+                pos = (idx // strides[i]) % sizes[i]
+                coords[dim_id] = dimensions_map[dim_id][pos]
+
+            time_label = coords.get("time")
+            geo = coords.get("geo")
+            citizen = coords.get("citizen")
+            applicant = coords.get("applicant")
+
+            if time_label and "M" in time_label:
+                year, month = time_label.split("M")
+                date_str = f"{year}-{month:0>2}-01"
+            else:
+                continue
+
+            records.append(
+                {
+                    "date": date_str,
+                    "geo_code": geo,
+                    "citizen_code": citizen,
+                    "applicant_type": applicant,
+                    "total_applications": value,
+                }
+            )
+
+    return pd.DataFrame(records)
+
+
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    if "applicant_type" in df.columns:
+        df = df[df["applicant_type"] == "FRST"].copy()
+    if "citizen_code" in df.columns:
+        df = df[df["citizen_code"] == "TOTAL"].copy()
+
+    df["total_applications"] = pd.to_numeric(df["total_applications"], errors="coerce").fillna(0).astype(int)
+    df.dropna(subset=["date", "geo_code"], inplace=True)
+    df.drop_duplicates(subset=["date", "geo_code", "citizen_code", "applicant_type"], inplace=True)
     return df
 
-def save_to_db(df):
-    """Sauvegarde dans PostgreSQL"""
+
+@retry("DB save")
+def save_to_db(df: pd.DataFrame) -> None:
     if df.empty:
-        logging.info("No data to save")
+        logging.info("No data to save.")
         return
-    
-    logging.info(f"Saving {len(df)} records to database...")
-    
+
     engine = get_db_engine()
-    
-    # Utiliser to_sql - simple et fiable
-    df.to_sql(
-        'asylum_data',
-        engine,
-        if_exists='replace',  # Remplace les anciennes données
-        index=False,
-        method='multi',
-        chunksize=1000
+    asylum_table = table(
+        "asylum_data",
+        column("date"),
+        column("geo_code"),
+        column("citizen_code"),
+        column("applicant_type"),
+        column("total_applications"),
     )
-    
-    logging.info("✅ Data saved successfully")
 
-def run_harvest():
-    """Fonction principale"""
-    logging.info("=" * 70)
-    logging.info("SYNTHETIC DATA HARVESTER")
-    logging.info("Generating realistic asylum data for EU-27")
-    logging.info("=" * 70)
-    
+    records = df.to_dict(orient="records")
+    chunk_size = 2000
+
+    logging.info("Saving %s records to DB...", len(records))
+    with engine.begin() as conn:
+        for start in range(0, len(records), chunk_size):
+            chunk = records[start : start + chunk_size]
+            stmt = insert(asylum_table).values(chunk)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["date", "geo_code", "citizen_code", "applicant_type"],
+                set_={"total_applications": stmt.excluded.total_applications},
+            )
+            conn.execute(stmt)
+    logging.info("Data saved successfully.")
+
+
+def write_health(status: bool, message: str = "") -> None:
+    payload = {
+        "status": "healthy" if status else "unhealthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "message": message,
+    }
     try:
-        # Générer les données
-        df = generate_realistic_data()
-        
-        # Sauvegarder
-        save_to_db(df)
-        
-        logging.info("=" * 70)
-        logging.info("✅ HARVEST COMPLETED SUCCESSFULLY")
-        logging.info(f"   Total records: {len(df)}")
-        logging.info(f"   Countries: {df['geo_code'].nunique()}")
-        logging.info(f"   Time periods: {df['date'].nunique()}")
-        logging.info("=" * 70)
-        
-    except Exception as e:
-        logging.error(f"❌ Harvest failed: {e}", exc_info=True)
-        raise
+        with open(HEALTH_FILE, "w", encoding="utf-8") as health_file:
+            health_file.write(str(payload))
+    except Exception:  # noqa: PERF203 logging
+        logging.exception("Failed to write health status")
 
-if __name__ == '__main__':
-    import sys
-    
-    # Health check
-    if len(sys.argv) > 1 and sys.argv[1] == '--healthcheck':
-        sys.exit(0)
-    
-    # Run harvest once
+
+def check_health() -> bool:
+    try:
+        with open(HEALTH_FILE, "r", encoding="utf-8") as health_file:
+            data = health_file.read()
+            return "healthy" in data
+    except FileNotFoundError:
+        logging.error("Health file not found at %s", HEALTH_FILE)
+    except Exception:  # noqa: PERF203 logging
+        logging.exception("Error reading health file")
+    return False
+
+
+def run_harvest() -> None:
+    logging.info("--- Starting Eurostat Harvest Job ---")
+    success = True
+    message = ""
+
+    try:
+        payloads = fetch_eurostat_data()
+        df = parse_eurostat_json(payloads)
+        logging.info("Parsed %s raw records", len(df))
+        df = clean_data(df)
+        logging.info("Filtered down to %s records after cleaning", len(df))
+        save_to_db(df)
+    except Exception as exc:  # noqa: PERF203 logging
+        success = False
+        message = str(exc)
+        logging.exception("Harvest job failed")
+        if EXIT_ON_FAILURE:
+            write_health(False, message)
+            sys.exit(1)
+    finally:
+        write_health(success, message)
+
+    logging.info("--- Harvest Job Finished ---")
+
+
+def start_scheduler() -> None:
     run_harvest()
-    
-    # Scheduler (daily regeneration)
-    logging.info("Scheduler started. Next run in 24 hours...")
+    schedule.every().day.at("02:00").do(run_harvest)
+
+    logging.info("Scheduler started. Waiting for jobs...")
     while True:
-        time.sleep(86400)
-        run_harvest()
+        schedule.run_pending()
+        time.sleep(60)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Data harvester service")
+    parser.add_argument("--healthcheck", action="store_true", help="Run healthcheck and exit")
+    args = parser.parse_args()
+
+    configure_logging()
+
+    if args.healthcheck:
+        sys.exit(0 if check_health() else 1)
+
+    logging.info("Data Harvester Service Starting...")
+    time.sleep(5)
+    start_scheduler()
+
+
+if __name__ == "__main__":
+    main()

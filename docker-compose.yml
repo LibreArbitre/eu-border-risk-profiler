@@ -44,6 +44,8 @@ services:
       RETRY_BACKOFF_SECONDS: ${RETRY_BACKOFF_SECONDS:-2}
       EXIT_ON_FAILURE: ${EXIT_ON_FAILURE:-true}
       HARVESTER_HEALTH_FILE: ${HARVESTER_HEALTH_FILE:-/tmp/harvester_health}
+      HARVESTER_MONTHS: ${HARVESTER_MONTHS:-60}
+      HARVESTER_TIME_CHUNK: ${HARVESTER_TIME_CHUNK:-12}
     # Command: exécute le script (peut être remplacé par un scheduler en production)
     command: python /app/harvester.py
     healthcheck:
