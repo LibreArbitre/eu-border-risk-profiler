@@ -25,6 +25,7 @@ EXIT_ON_FAILURE = os.getenv("EXIT_ON_FAILURE", "true").lower() == "true"
 HEALTH_FILE = os.getenv("HARVESTER_HEALTH_FILE", "/tmp/harvester_health")
 MONTHS_TO_FETCH = int(os.getenv("HARVESTER_MONTHS", "60"))
 TIME_CHUNK_SIZE = int(os.getenv("HARVESTER_TIME_CHUNK", "12"))
+HARVESTER_LAG_MONTHS = int(os.getenv("HARVESTER_LAG_MONTHS", "2"))
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
@@ -97,7 +98,7 @@ def get_db_engine():
 
 
 def build_time_periods(months: int) -> List[str]:
-    end_date = datetime.utcnow().replace(day=1)
+    end_date = first_day_n_months_ago(HARVESTER_LAG_MONTHS)
     start_date = end_date - timedelta(days=months * 30)
     periods = []
     current = end_date
@@ -105,6 +106,27 @@ def build_time_periods(months: int) -> List[str]:
         periods.append(f"{current.year}M{current.month:02d}")
         current -= timedelta(days=30)
     return sorted(set(periods))
+
+
+def first_day_n_months_ago(months_ago: int) -> datetime:
+    """Return the first day UTC of the month that is ``months_ago`` in the past.
+
+    This avoids querying months that are still in progress or not yet published
+    by Eurostat (which respond with HTTP 400), preventing the harvester from
+    repeatedly hitting unavailable future months.
+    """
+
+    now = datetime.utcnow()
+    year = now.year
+    month = now.month
+
+    for _ in range(months_ago):
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+
+    return datetime(year, month, 1)
 
 
 def chunk_iterable(items: Iterable[str], size: int) -> Iterable[List[str]]:
