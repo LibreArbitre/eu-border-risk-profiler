@@ -18,8 +18,6 @@ from sqlalchemy import (
     String,
     create_engine,
     select,
-    table,
-    column,
 )
 from sqlalchemy.dialects.postgresql import insert
 from sklearn.ensemble import RandomForestRegressor
@@ -298,45 +296,18 @@ def save_predictions(df):
     logging.info("Saving %s predictions...", len(df))
 
     try:
-        with engine.connect() as conn:
-            trans = conn.begin()
-            try:
-                # Table abstraction
-                risk_table = table('risk_predictions',
-                    column('date'),
-                    column('geo_code'),
-                    column('risk_score_calculated'),
-                    column('prediction_target_month'),
-                    column('predicted_risk_score'),
-                    column('model_id')
-                )
-
-                data_to_insert = df.to_dict(orient='records')
-
-                chunk_size = 1000
-                for i in range(0, len(data_to_insert), chunk_size):
-                    chunk = data_to_insert[i:i+chunk_size]
-                    stmt = insert(risk_table).values(chunk)
-                    # Upsert
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=['geo_code', 'prediction_target_month'],
-                        set_={
-                            'risk_score_calculated': stmt.excluded.risk_score_calculated,
-                            'predicted_risk_score': stmt.excluded.predicted_risk_score,
-                            'date': stmt.excluded.date, # Update source date
-                            'model_id': stmt.excluded.model_id
-                        }
-                    )
-                    conn.execute(stmt)
-
-                trans.commit()
-                logging.info("Predictions saved.")
-            except Exception as e:
-                trans.rollback()
-                logging.exception("Error saving predictions")
-                raise e
+        predictions_df = pd.DataFrame(df.to_dict(orient='records'))
+        predictions_df.to_sql(
+            'risk_predictions',
+            engine,
+            if_exists='append',
+            index=False,
+            method='multi',
+            chunksize=500,
+        )
+        logging.info("Predictions saved.")
     except Exception as e:
-        logging.exception("DB Error")
+        logging.exception("Error saving predictions")
         raise e
 
 
