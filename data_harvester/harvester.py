@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List
 
 import pandas as pd
 import requests
+from requests import HTTPError
 import schedule
 from sqlalchemy import column, create_engine, table
 from sqlalchemy.dialects.postgresql import insert
@@ -71,6 +72,9 @@ def retry(operation_name: str):
                 try:
                     return func(*args, **kwargs)
                 except Exception as exc:  # noqa: PERF203 acceptable for logging
+                    if isinstance(exc, HTTPError) and exc.response is not None:
+                        if exc.response.status_code == 400:
+                            raise
                     logging.warning(
                         "%s failed on attempt %s/%s: %s",
                         operation_name,
@@ -114,6 +118,42 @@ def chunk_iterable(items: Iterable[str], size: int) -> Iterable[List[str]]:
         yield chunk
 
 
+class UnavailablePeriod(Exception):
+    """Signals that a single period is unavailable (HTTP 400) and later periods should be skipped."""
+
+    def __init__(self, country: str, period: str):
+        super().__init__(f"{country} period {period}")
+        self.country = country
+        self.period = period
+
+
+def fetch_country_time_chunk(country: str, times: List[str]) -> List[Dict]:
+    try:
+        return [fetch_country_period(country, times)]
+    except HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 400 and len(times) > 1:
+            mid = len(times) // 2
+            left = times[:mid]
+            right = times[mid:]
+            logging.info(
+                "Splitting time chunk for %s after HTTP 400 into %s and %s",
+                country,
+                ",".join(left),
+                ",".join(right),
+            )
+            payloads: List[Dict] = []
+            payloads.extend(fetch_country_time_chunk(country, left))
+            payloads.extend(fetch_country_time_chunk(country, right))
+            return payloads
+        if status == 400 and len(times) == 1:
+            logging.warning(
+                "Dropping period %s for %s after HTTP 400", times[0], country
+            )
+            raise UnavailablePeriod(country, times[0])
+        raise
+
+
 @retry("Eurostat fetch")
 def fetch_country_period(country: str, times: List[str]) -> Dict:
     params = {
@@ -135,20 +175,30 @@ def fetch_eurostat_data() -> List[Dict]:
     for country in EU_COUNTRIES:
         for time_chunk in chunk_iterable(time_periods, TIME_CHUNK_SIZE):
             try:
-                payload = fetch_country_period(country, time_chunk)
+                payloads = fetch_country_time_chunk(country, time_chunk)
+            except UnavailablePeriod as exc:
+                logging.info(
+                    "Stopping further fetches for %s after unavailable period %s",
+                    exc.country,
+                    exc.period,
+                )
+                break
             except Exception as exc:  # noqa: PERF203 logging
-                logging.warning("Skipping chunk for %s (%s): %s", country, ",".join(time_chunk), exc)
+                logging.warning(
+                    "Skipping chunk for %s (%s): %s", country, ",".join(time_chunk), exc
+                )
                 continue
 
-            if payload and payload.get("value"):
-                all_payloads.append(payload)
-            else:
-                logging.info("No data returned for %s (%s)", country, ",".join(time_chunk))
+            for payload in payloads:
+                if payload and payload.get("value"):
+                    all_payloads.append(payload)
+                else:
+                    logging.info("No data returned for %s (%s)", country, ",".join(time_chunk))
 
     if not all_payloads:
-        raise ValueError("No data fetched from Eurostat")
-
-    logging.info("Fetched %s payloads from Eurostat", len(all_payloads))
+        logging.warning("No data fetched from Eurostat; continuing without updates")
+    else:
+        logging.info("Fetched %s payloads from Eurostat", len(all_payloads))
     return all_payloads
 
 
