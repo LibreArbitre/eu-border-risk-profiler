@@ -137,6 +137,11 @@ def fetch_country_time_chunk(country: str, times: List[str]) -> List[Dict]:
             payloads.extend(fetch_country_time_chunk(country, left))
             payloads.extend(fetch_country_time_chunk(country, right))
             return payloads
+        if status == 400 and len(times) == 1:
+            logging.warning(
+                "Dropping period %s for %s after HTTP 400", times[0], country
+            )
+            return []
         raise
 
 
@@ -175,9 +180,9 @@ def fetch_eurostat_data() -> List[Dict]:
                     logging.info("No data returned for %s (%s)", country, ",".join(time_chunk))
 
     if not all_payloads:
-        raise ValueError("No data fetched from Eurostat")
-
-    logging.info("Fetched %s payloads from Eurostat", len(all_payloads))
+        logging.warning("No data fetched from Eurostat; continuing without updates")
+    else:
+        logging.info("Fetched %s payloads from Eurostat", len(all_payloads))
     return all_payloads
 
 
