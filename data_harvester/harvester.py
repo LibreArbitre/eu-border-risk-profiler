@@ -72,6 +72,9 @@ def retry(operation_name: str):
                 try:
                     return func(*args, **kwargs)
                 except Exception as exc:  # noqa: PERF203 acceptable for logging
+                    if isinstance(exc, HTTPError) and exc.response is not None:
+                        if exc.response.status_code == 400:
+                            raise
                     logging.warning(
                         "%s failed on attempt %s/%s: %s",
                         operation_name,
