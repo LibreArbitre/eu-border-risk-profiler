@@ -137,11 +137,6 @@ def fetch_country_time_chunk(country: str, times: List[str]) -> List[Dict]:
             payloads.extend(fetch_country_time_chunk(country, left))
             payloads.extend(fetch_country_time_chunk(country, right))
             return payloads
-        if status == 400 and len(times) == 1:
-            logging.warning(
-                "Dropping period %s for %s after HTTP 400", times[0], country
-            )
-            return []
         raise
 
 
