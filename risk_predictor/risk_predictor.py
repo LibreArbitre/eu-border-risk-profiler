@@ -94,7 +94,7 @@ def get_data_from_db():
     logging.info("Fetching data from DB...")
     engine = get_db_engine()
     # Fetch only NASY_APP (First Time Applicants)
-    query = "SELECT date, geo_code, total_applications FROM asylum_data WHERE applicant_type = 'NASY_APP' ORDER BY date"
+    query = "SELECT date, geo_code, total_applications FROM asylum_data WHERE applicant_type = 'FRST' ORDER BY date"
     df = pd.read_sql(query, engine)
     return df
 

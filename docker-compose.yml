@@ -64,7 +64,7 @@ services:
     # Dépend du Harvester pour s'assurer que les données existent
     depends_on:
       data_harvester:
-        condition: service_completed_successfully
+        condition: service_healthy
     environment:
       DB_HOST: db
       DB_USER: ${DB_USER:-user}
@@ -91,7 +91,7 @@ services:
     container_name: eu_brp_api
     depends_on:
       risk_predictor:
-        condition: service_completed_successfully
+        condition: service_healthy
     environment:
       DB_HOST: db
       DB_USER: ${DB_USER:-user}
