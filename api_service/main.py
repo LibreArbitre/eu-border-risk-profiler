@@ -64,7 +64,9 @@ def get_predictions():
 @app.get("/api/v1/data/history/{geo_code}")
 def get_history(geo_code: str):
     """Returns raw applications count for line chart."""
-    query = text("SELECT date, total_applications FROM asylum_data WHERE geo_code = :geo AND applicant_type='NASY_APP' ORDER BY date")
+    query = text(
+        "SELECT date, total_applications FROM asylum_data WHERE geo_code = :geo AND applicant_type='FRST' ORDER BY date"
+    )
     try:
         with engine.connect() as conn:
             result = conn.execute(query, {"geo": geo_code})
