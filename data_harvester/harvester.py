@@ -140,15 +140,6 @@ def chunk_iterable(items: Iterable[str], size: int) -> Iterable[List[str]]:
         yield chunk
 
 
-class UnavailablePeriod(Exception):
-    """Signals that a single period is unavailable (HTTP 400) and later periods should be skipped."""
-
-    def __init__(self, country: str, period: str):
-        super().__init__(f"{country} period {period}")
-        self.country = country
-        self.period = period
-
-
 def fetch_country_time_chunk(country: str, times: List[str]) -> List[Dict]:
     try:
         return [fetch_country_period(country, times)]
@@ -172,7 +163,7 @@ def fetch_country_time_chunk(country: str, times: List[str]) -> List[Dict]:
             logging.warning(
                 "Dropping period %s for %s after HTTP 400", times[0], country
             )
-            raise UnavailablePeriod(country, times[0])
+            return []
         raise
 
 
@@ -198,13 +189,6 @@ def fetch_eurostat_data() -> List[Dict]:
         for time_chunk in chunk_iterable(time_periods, TIME_CHUNK_SIZE):
             try:
                 payloads = fetch_country_time_chunk(country, time_chunk)
-            except UnavailablePeriod as exc:
-                logging.info(
-                    "Stopping further fetches for %s after unavailable period %s",
-                    exc.country,
-                    exc.period,
-                )
-                break
             except Exception as exc:  # noqa: PERF203 logging
                 logging.warning(
                     "Skipping chunk for %s (%s): %s", country, ",".join(time_chunk), exc
