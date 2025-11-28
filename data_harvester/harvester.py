@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List
 
 import pandas as pd
 import requests
+from requests import HTTPError
 import schedule
 from sqlalchemy import column, create_engine, table
 from sqlalchemy.dialects.postgresql import insert
@@ -114,6 +115,28 @@ def chunk_iterable(items: Iterable[str], size: int) -> Iterable[List[str]]:
         yield chunk
 
 
+def fetch_country_time_chunk(country: str, times: List[str]) -> List[Dict]:
+    try:
+        return [fetch_country_period(country, times)]
+    except HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 400 and len(times) > 1:
+            mid = len(times) // 2
+            left = times[:mid]
+            right = times[mid:]
+            logging.info(
+                "Splitting time chunk for %s after HTTP 400 into %s and %s",
+                country,
+                ",".join(left),
+                ",".join(right),
+            )
+            payloads: List[Dict] = []
+            payloads.extend(fetch_country_time_chunk(country, left))
+            payloads.extend(fetch_country_time_chunk(country, right))
+            return payloads
+        raise
+
+
 @retry("Eurostat fetch")
 def fetch_country_period(country: str, times: List[str]) -> Dict:
     params = {
@@ -135,15 +158,18 @@ def fetch_eurostat_data() -> List[Dict]:
     for country in EU_COUNTRIES:
         for time_chunk in chunk_iterable(time_periods, TIME_CHUNK_SIZE):
             try:
-                payload = fetch_country_period(country, time_chunk)
+                payloads = fetch_country_time_chunk(country, time_chunk)
             except Exception as exc:  # noqa: PERF203 logging
-                logging.warning("Skipping chunk for %s (%s): %s", country, ",".join(time_chunk), exc)
+                logging.warning(
+                    "Skipping chunk for %s (%s): %s", country, ",".join(time_chunk), exc
+                )
                 continue
 
-            if payload and payload.get("value"):
-                all_payloads.append(payload)
-            else:
-                logging.info("No data returned for %s (%s)", country, ",".join(time_chunk))
+            for payload in payloads:
+                if payload and payload.get("value"):
+                    all_payloads.append(payload)
+                else:
+                    logging.info("No data returned for %s (%s)", country, ",".join(time_chunk))
 
     if not all_payloads:
         raise ValueError("No data fetched from Eurostat")
