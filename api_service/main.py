@@ -16,11 +16,11 @@ logger = logging.getLogger("api_service")
 app = FastAPI(title="EU Border Risk Profiler API")
 
 
-def require_env(var_name: str) -> str:
-    """Return environment variable value or raise if missing."""
+def require_env(var_name: str, default: Optional[str] = None) -> str:
+    """Return environment variable value, or a default if provided."""
 
-    value = os.getenv(var_name)
-    if not value:
+    value = os.getenv(var_name, default)
+    if value in (None, ""):
         logger.error("Missing required environment variable", extra={"env_var": var_name})
         raise RuntimeError(f"Missing required environment variable: {var_name}")
     return value
@@ -30,7 +30,7 @@ DB_USER = require_env("DB_USER")
 DB_PASSWORD = require_env("DB_PASSWORD")
 DB_NAME = require_env("DB_NAME")
 DB_HOST = require_env("DB_HOST")
-DB_PORT = require_env("DB_PORT")
+DB_PORT = require_env("DB_PORT", "5432")
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 engine = create_engine(DATABASE_URL)
