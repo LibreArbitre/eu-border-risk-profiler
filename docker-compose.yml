@@ -40,6 +40,7 @@ services:
       DB_USER: ${DB_USER:-user}
       DB_PASSWORD: ${DB_PASSWORD:-password}
       DB_NAME: ${DB_NAME:-eubrp_db}
+      DB_PORT: ${DB_PORT:-5432}
       RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-3}
       RETRY_BACKOFF_SECONDS: ${RETRY_BACKOFF_SECONDS:-2}
       EXIT_ON_FAILURE: ${EXIT_ON_FAILURE:-true}
@@ -72,6 +73,7 @@ services:
       DB_USER: ${DB_USER:-user}
       DB_PASSWORD: ${DB_PASSWORD:-password}
       DB_NAME: ${DB_NAME:-eubrp_db}
+      DB_PORT: ${DB_PORT:-5432}
       RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-3}
       RETRY_BACKOFF_SECONDS: ${RETRY_BACKOFF_SECONDS:-2}
       EXIT_ON_FAILURE: ${EXIT_ON_FAILURE:-true}
@@ -99,11 +101,12 @@ services:
       DB_USER: ${DB_USER:-user}
       DB_PASSWORD: ${DB_PASSWORD:-password}
       DB_NAME: ${DB_NAME:-eubrp_db}
+      DB_PORT: ${DB_PORT:-5432}
     ports:
       - "8000:8000"
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    command: uvicorn api_service.main:app --host 0.0.0.0 --port 8000
     healthcheck:
-      test: [ "CMD", "python", "healthcheck.py" ]
+      test: [ "CMD", "python", "-m", "api_service.healthcheck" ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -124,7 +127,7 @@ services:
       API_URL: http://api_service:8000
     ports:
       - "8501:8501"
-    command: streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0 --server.enableCORS false
+    command: streamlit run api_service/dashboard.py --server.port 8501 --server.address 0.0.0.0 --server.enableCORS false
     healthcheck:
       test: [ "CMD-SHELL", "python -c \"import sys, requests;\\nurl='http://localhost:8501/_stcore/health';\\ntry:\\n resp=requests.get(url, timeout=2);\\n sys.exit(0 if resp.status_code==200 else 1)\\nexcept Exception as exc:\\n print(exc); sys.exit(1)\" " ]
       interval: 10s
