@@ -1,10 +1,11 @@
 import argparse
+import hashlib
 import logging
 import os
 import pickle
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -41,6 +42,8 @@ DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NA
 
 MODEL_NAME = "random_forest_risk"
 MODEL_HYPERPARAMS = {"n_estimators": 50, "random_state": 42}
+MODEL_MAX_AGE_DAYS = int(os.getenv("MODEL_MAX_AGE_DAYS", "30"))
+DRIFT_TOLERANCE = float(os.getenv("DRIFT_TOLERANCE", "0.15"))
 
 # Define SQLAlchemy table for model registry
 metadata = MetaData()
@@ -115,7 +118,12 @@ def load_latest_model(engine, geo_code):
     try:
         with engine.connect() as conn:
             result = conn.execute(
-                select(model_registry_table.c.id, model_registry_table.c.model_artifact)
+                select(
+                    model_registry_table.c.id,
+                    model_registry_table.c.model_artifact,
+                    model_registry_table.c.trained_at,
+                    model_registry_table.c.hyperparameters,
+                )
                 .where(
                     (model_registry_table.c.model_name == MODEL_NAME) & (model_registry_table.c.geo_code == geo_code)
                 )
@@ -124,21 +132,23 @@ def load_latest_model(engine, geo_code):
             ).fetchone()
 
             if result:
-                return pickle.loads(result.model_artifact), result.id
+                metadata = result.hyperparameters or {}
+                trained_at = result.trained_at
+                return pickle.loads(result.model_artifact), result.id, trained_at, metadata
     except Exception as e:
         print(f"Error loading persisted model for {geo_code}: {e}", flush=True)
 
-    return None, None
+    return None, None, None, {}
 
 
-def persist_model(engine, geo_code, model):
+def persist_model(engine, geo_code, model, metadata=None):
     try:
         payload = {
             "model_name": MODEL_NAME,
             "geo_code": geo_code,
             "model_version": datetime.utcnow().strftime("v%Y%m%d%H%M%S"),
             "trained_at": datetime.utcnow(),
-            "hyperparameters": MODEL_HYPERPARAMS,
+            "hyperparameters": metadata or MODEL_HYPERPARAMS,
             "model_artifact": pickle.dumps(model),
         }
 
@@ -158,20 +168,106 @@ def train_model(train_df):
     return model
 
 
-def get_or_train_model(engine, geo_code, train_df):
-    model, model_id = load_latest_model(engine, geo_code)
+def compute_data_signature(train_df: pd.DataFrame) -> str:
+    signature_df = train_df[["date", "total_applications"]].copy()
+    signature_df["date"] = pd.to_datetime(signature_df["date"])
+    signature_df = signature_df.sort_values("date")
+    payload = signature_df.to_json(date_format="iso", orient="records")
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    if model and model_id:
-        print(f"Loaded persisted model {model_id} for {geo_code}", flush=True)
-        return model, model_id
 
+def model_is_stale(trained_at: datetime | None) -> bool:
+    if trained_at is None:
+        return True
+    return datetime.utcnow() - trained_at > timedelta(days=MODEL_MAX_AGE_DAYS)
+
+
+def evaluate_model(train_df: pd.DataFrame, model) -> float | None:
+    if model is None:
+        return None
+    try:
+        features = train_df[["lag_1", "lag_2", "lag_3", "month"]]
+        target = train_df["risk_score"]
+        preds = model.predict(features)
+        return float(np.mean(np.abs(preds - target)))
+    except Exception:
+        logging.exception("Failed to evaluate model performance")
+        return None
+
+
+def log_model_drift(old_mae: float | None, new_mae: float | None, geo_code: str):
+    if old_mae is None or new_mae is None:
+        return
+
+    delta = new_mae - old_mae
+    pct_change = delta / old_mae if old_mae else float("inf")
+    logging.info(
+        "Model performance for %s. Prev MAE=%.4f, New MAE=%.4f, Δ=%.4f (%.2f%%)",
+        geo_code,
+        old_mae,
+        new_mae,
+        delta,
+        pct_change * 100,
+    )
+
+    if pct_change > DRIFT_TOLERANCE:
+        logging.warning(
+            "Potential performance drift detected for %s (MAE worsened by %.2f%%)",
+            geo_code,
+            pct_change * 100,
+        )
+
+
+def get_or_train_model(
+    engine,
+    geo_code,
+    train_df,
+    loader=load_latest_model,
+    persister=persist_model,
+):
+    data_signature = compute_data_signature(train_df)
+    model, model_id, trained_at, metadata = loader(engine, geo_code)
+
+    existing_signature = metadata.get("data_signature") if metadata else None
+    stale = model_is_stale(trained_at)
+
+    if model and model_id and existing_signature == data_signature and not stale:
+        logging.info(
+            "Reusing cached model %s for %s (signature=%s)",
+            model_id,
+            geo_code,
+            data_signature[:8],
+        )
+        return model, model_id, {"reused": True, "data_signature": data_signature}
+
+    old_mae = evaluate_model(train_df, model) if model else None
     model = train_model(train_df)
-    model_id = persist_model(engine, geo_code, model)
+    new_mae = evaluate_model(train_df, model)
+    log_model_drift(old_mae, new_mae, geo_code)
+
+    metadata_payload = {
+        **MODEL_HYPERPARAMS,
+        "data_signature": data_signature,
+        "train_size": len(train_df),
+    }
+    if new_mae is not None:
+        metadata_payload["train_mae"] = new_mae
+    if old_mae is not None:
+        metadata_payload["prev_mae"] = old_mae
+    model_id = persister(engine, geo_code, model, metadata_payload)
 
     if model_id is None:
         raise RuntimeError(f"Failed to persist model for {geo_code}")
 
-    return model, model_id
+    logging.info(
+        "Trained and persisted model %s for %s (signature=%s, stale=%s)",
+        model_id,
+        geo_code,
+        data_signature[:8],
+        stale,
+    )
+
+    return model, model_id, {"reused": False, "data_signature": data_signature, "train_mae": new_mae}
 
 
 def calculate_risk_and_predict(df, engine):
@@ -241,10 +337,22 @@ def calculate_risk_and_predict(df, engine):
         if len(train_df) < 6:
             continue
 
-        # Force Retraining (User Request: Always retrain on new data)
-        # logic: we always train a new model instead of loading from DB
-        model = train_model(train_df)
-        model_id = persist_model(engine, geo, model)
+        model, model_id, model_info = get_or_train_model(engine, geo, train_df)
+        if model_info.get("reused"):
+            logging.info(
+                "Model %s for %s reused (signature=%s)",
+                model_id,
+                geo,
+                model_info.get("data_signature", ""),
+            )
+        else:
+            logging.info(
+                "Model %s for %s retrained (signature=%s, train_mae=%s)",
+                model_id,
+                geo,
+                model_info.get("data_signature", ""),
+                model_info.get("train_mae"),
+            )
 
         # Predict for M+1, M+2, M+3 from the LAST available point
         last_row = group.iloc[-1]
