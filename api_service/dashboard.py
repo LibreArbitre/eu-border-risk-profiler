@@ -52,17 +52,17 @@ st.markdown("""
     }
     
     .dashboard-title {
-        color: #ffffff;
-        font-size: 2rem;
-        font-weight: 700;
-        margin: 0;
+        color: #ffffff !important;
+        font-size: 2rem !important;
+        font-weight: 700 !important;
+        margin: 0 !important;
         letter-spacing: -0.5px;
     }
     
     .dashboard-subtitle {
-        color: #a0c4e8;
-        font-size: 1rem;
-        margin-top: 0.5rem;
+        color: #a0c4e8 !important;
+        font-size: 1rem !important;
+        margin-top: 0.5rem !important;
         font-weight: 400;
     }
     
