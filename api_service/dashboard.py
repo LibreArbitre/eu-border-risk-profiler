@@ -37,7 +37,7 @@ st.markdown("""
     
     /* Main container styling */
     .main .block-container {
-        padding-top: 2rem;
+        padding-top: 0 !important;
         padding-bottom: 2rem;
         max-width: 1400px;
     }
@@ -46,8 +46,8 @@ st.markdown("""
     .dashboard-header {
         background: linear-gradient(135deg, #1e3a5f 0%, #2c5282 100%);
         padding: 1.5rem 2rem;
-        border-radius: 12px;
-        margin-bottom: 2rem;
+        border-radius: 0 0 12px 12px;
+        margin: -1rem -1rem 2rem -1rem;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
     }
     
