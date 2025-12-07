@@ -2,7 +2,7 @@
 
 The **EU Border Risk Profiler** is a specialized intelligence system designed to monitor and forecast asylum application pressure at EU external borders. It leverages historical Eurostat data to calculate real-time "Risk Scores" and predict future trends using machine learning.
 
-![EU Border Risk Profiler Dashboard](dashboard_preview.jpg)
+![EU Border Risk Profiler Dashboard](dashboard_preview.png)
 
 ## Key Features
 
