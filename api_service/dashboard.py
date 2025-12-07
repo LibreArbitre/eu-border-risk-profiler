@@ -215,11 +215,15 @@ df_curr = get_latest()
 
 # --- KPI Metrics Row ---
 if not df_pred.empty:
-    # Calculate KPIs
-    avg_risk = df_pred['risk_score'].mean()
-    max_risk = df_pred['risk_score'].max()
-    max_risk_country = df_pred.loc[df_pred['risk_score'].idxmax(), 'geo_code']
-    countries_with_data = df_pred['geo_code'].nunique()
+    # Use the same date as the map for consistency
+    min_date = df_pred['date'].min()
+    df_kpi = df_pred[df_pred['date'] == min_date]
+    
+    # Calculate KPIs from the filtered data
+    avg_risk = df_kpi['risk_score'].mean()
+    max_risk = df_kpi['risk_score'].max()
+    max_risk_country = df_kpi.loc[df_kpi['risk_score'].idxmax(), 'geo_code']
+    countries_with_data = df_kpi['geo_code'].nunique()
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -338,15 +342,18 @@ with col_ranking:
     st.markdown('<p class="section-header">🏆 Risk Ranking</p>', unsafe_allow_html=True)
     
     if not df_pred.empty:
-        # Calculate average risk per country
-        ranking = df_pred.groupby('geo_code').agg({
-            'risk_score': 'mean'
-        }).round(2).sort_values('risk_score', ascending=False)
+        # Use the same date as the map (min_date) for consistency
+        min_date = df_pred['date'].min()
+        df_ranking = df_pred[df_pred['date'] == min_date].copy()
         
-        ranking['Country'] = ranking.index.map(COUNTRY_NAMES)
-        ranking = ranking.reset_index()
+        # Sort by risk score
+        ranking = df_ranking[['geo_code', 'risk_score']].copy()
+        ranking = ranking.sort_values('risk_score', ascending=False)
+        ranking['Country'] = ranking['geo_code'].map(COUNTRY_NAMES)
+        ranking = ranking.reset_index(drop=True)
         ranking.columns = ['Code', 'Risk Score', 'Country']
         ranking = ranking[['Country', 'Code', 'Risk Score']]
+        ranking['Risk Score'] = ranking['Risk Score'].round(2)
         ranking['Rank'] = range(1, len(ranking) + 1)
         ranking = ranking[['Rank', 'Country', 'Code', 'Risk Score']]
         
