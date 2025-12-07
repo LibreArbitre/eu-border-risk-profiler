@@ -1,0 +1,4 @@
+eu_brp_api  | INFO:     Started server process [1]
+eu_brp_api  | INFO:     Waiting for application startup.
+eu_brp_api  | INFO:     Application startup complete.
+eu_brp_api  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)

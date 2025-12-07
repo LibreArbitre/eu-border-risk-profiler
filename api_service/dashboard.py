@@ -192,7 +192,7 @@ st.markdown("""
     <div style="display: flex; align-items: center; justify-content: space-between;">
         <div>
             <h1 class="dashboard-title">EU Border Risk Profiler</h1>
-            <p class="dashboard-subtitle">Strategic Intelligence & Forecasting System</p>
+            <p class="dashboard-subtitle">Monitoring and Forecasting Asylum Application Trends across the European Union</p>
         </div>
         <div style="text-align: right;">
             <div style="background: rgba(255,255,255,0.1); padding: 0.5rem 1rem; border-radius: 8px;">
@@ -206,6 +206,10 @@ st.markdown("""
 
 # --- Load Data ---
 df_pred = get_predictions()
+if not df_pred.empty:
+    df_pred['date'] = pd.to_datetime(df_pred['date'])
+    df_pred['prediction_target_month'] = pd.to_datetime(df_pred['prediction_target_month'])
+
 df_curr = get_latest()
 
 # --- Logic: Handle Data Lags ---
@@ -349,9 +353,7 @@ with col_map:
         )
         
         with st.container():
-            st.markdown('<div class="chart-container">', unsafe_allow_html=True)
             st.plotly_chart(fig, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
     else:
         st.info("⏳ System initializing... Waiting for prediction data.")
 
@@ -442,9 +444,7 @@ if valid_data:
                     xaxis=dict(gridcolor='#f1f5f9')
                 )
                 
-                st.markdown('<div class="chart-container">', unsafe_allow_html=True)
                 st.plotly_chart(fig_line, use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
             else:
                 st.warning("No historical data available.")
 
@@ -471,7 +471,7 @@ if valid_data:
 st.markdown("<br><br><hr>", unsafe_allow_html=True)
 st.markdown("""
 <div style="text-align: center; color: #94a3b8; font-size: 0.8rem; padding: 2rem;">
-    <strong>EU Border Risk Profiler v2.0</strong> • Powered by Antigravity AI<br>
+    <strong>EU Border Risk Profiler v2.0</strong><br>
     Data Source: Eurostat (migr_asyappctzm) • Last Update: {}
 </div>
 """.format(datetime.now().strftime('%d %b %Y')), unsafe_allow_html=True)

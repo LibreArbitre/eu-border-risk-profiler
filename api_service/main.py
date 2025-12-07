@@ -125,14 +125,28 @@ def get_predictions():
     """Returns predictions for M+1..M+3."""
     # Logic: Get predictions from the latest run
     query = """
-    SELECT geo_code, predicted_risk_score as score, prediction_target_month as date
-    FROM risk_predictions
-    WHERE date = (SELECT MAX(date) FROM risk_predictions)
+    WITH latest_date_per_geo AS (
+        SELECT geo_code, MAX(date) as max_date
+        FROM risk_predictions
+        GROUP BY geo_code
+    )
+    SELECT rp.geo_code, rp.risk_score_calculated, rp.predicted_risk_score, rp.date, rp.prediction_target_month
+    FROM risk_predictions rp
+    JOIN latest_date_per_geo ld ON rp.geo_code = ld.geo_code AND rp.date = ld.max_date
     """
     try:
         with engine.connect() as conn:
             result = conn.execute(text(query))
-            return [{"geo_code": r.geo_code, "risk_score": float(r.score), "date": r.date, "type": "predicted"} for r in result]
+            return [
+                {
+                    "geo_code": r.geo_code, 
+                    "risk_score_calculated": float(r.risk_score_calculated), 
+                    "predicted_risk_score": float(r.predicted_risk_score),
+                    "date": r.date,
+                    "prediction_target_month": r.prediction_target_month,
+                    "type": "predicted"
+                } for r in result
+            ]
     except Exception as e:
         print(e)
         return []
