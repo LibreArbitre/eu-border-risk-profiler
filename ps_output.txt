@@ -1,6 +1,0 @@
-NAME               IMAGE                                                                     COMMAND                  SERVICE          CREATED         STATUS                     PORTS
-eu_brp_api         eu-border-risk-profiler-api_service                                       "uvicorn main:app --…"   api_service      5 minutes ago   Up 5 minutes (unhealthy)   0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp
-eu_brp_dashboard   eu-border-risk-profiler-dashboard                                         "streamlit run dashb…"   dashboard        5 minutes ago   Created                    
-eu_brp_db          postgres:15-alpine                                                        "docker-entrypoint.s…"   db               5 minutes ago   Up 5 minutes (healthy)     0.0.0.0:5432->5432/tcp, [::]:5432->5432/tcp
-eu_brp_harvester   eu-border-risk-profiler-data_harvester                                    "python /app/harvest…"   data_harvester   5 minutes ago   Up 5 minutes (healthy)     
-eu_brp_predictor   sha256:a04ff7d29dc18156f1999170af223882763f6780f3c18d73d729dd6536a255c3   "python /app/risk_pr…"   risk_predictor   5 minutes ago   Up 5 minutes (healthy)     
