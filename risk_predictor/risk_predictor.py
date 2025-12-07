@@ -5,6 +5,7 @@ import os
 import pickle
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -37,8 +38,11 @@ RETRY_MAX_ATTEMPTS = int(os.getenv("RETRY_MAX_ATTEMPTS", "3"))
 RETRY_BACKOFF_SECONDS = float(os.getenv("RETRY_BACKOFF_SECONDS", "2"))
 EXIT_ON_FAILURE = os.getenv("EXIT_ON_FAILURE", "true").lower() == "true"
 HEALTH_FILE = os.getenv("PREDICTOR_HEALTH_FILE", "/tmp/predictor_health")
+PREDICTION_RETENTION_DAYS = int(os.getenv("PREDICTION_RETENTION_DAYS", "90"))
 
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
 
 MODEL_NAME = "random_forest_risk"
 MODEL_HYPERPARAMS = {"n_estimators": 50, "random_state": 42}
@@ -425,21 +429,44 @@ def check_health():
 
 
 @retry("DB save")
-def save_predictions(df):
+def _build_run_metadata(run_metadata=None):
+    if run_metadata:
+        return {
+            "run_id": run_metadata.get("run_id", str(uuid.uuid4())),
+            "prediction_date": run_metadata.get("prediction_date", datetime.utcnow()),
+        }
+
+    return {"run_id": str(uuid.uuid4()), "prediction_date": datetime.utcnow()}
+
+
+def purge_old_predictions(engine, retention_days: int):
+    if retention_days <= 0:
+        return
+
+    cutoff_date = datetime.utcnow() - timedelta(days=retention_days)
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("DELETE FROM risk_predictions WHERE prediction_date < :cutoff"),
+            {"cutoff": cutoff_date},
+        )
+        logging.info("Purged %s old prediction rows", result.rowcount)
+
+
+def save_predictions(df, engine=None, run_metadata=None):
     if df.empty:
         logging.info("No predictions to save.")
         return
 
-    engine = get_db_engine()
+    engine = engine or get_db_engine()
     logging.info("Saving %s predictions...", len(df))
 
-    try:
-        # Clear old predictions before inserting new ones
-        with engine.begin() as conn:
-            conn.execute(text("TRUNCATE TABLE risk_predictions"))
-            logging.info("Cleared old predictions.")
+    metadata = _build_run_metadata(run_metadata)
 
+    try:
         predictions_df = pd.DataFrame(df.to_dict(orient="records"))
+        predictions_df["run_id"] = metadata["run_id"]
+        predictions_df["prediction_date"] = metadata["prediction_date"]
+
         predictions_df.to_sql(
             "risk_predictions",
             engine,
@@ -448,7 +475,13 @@ def save_predictions(df):
             method="multi",
             chunksize=500,
         )
-        logging.info("Predictions saved.")
+        logging.info(
+            "Predictions saved for run %s at %s.",
+            metadata["run_id"],
+            metadata["prediction_date"],
+        )
+
+        purge_old_predictions(engine, PREDICTION_RETENTION_DAYS)
     except Exception as e:
         logging.exception("Error saving predictions")
         raise e
@@ -476,7 +509,7 @@ def run_job():
             raise ValueError("No data found in DB after waiting. Harvester might be broken.")
 
         preds = calculate_risk_and_predict(df, engine)
-        save_predictions(preds)
+        save_predictions(preds, engine=engine)
     except Exception as exc:  # noqa: PERF203 logging
         success = False
         message = str(exc)
