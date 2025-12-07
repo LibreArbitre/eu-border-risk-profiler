@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     create_engine,
     select,
+    text,
 )
 from sqlalchemy.dialects.postgresql import insert
 from sklearn.ensemble import RandomForestRegressor
@@ -91,9 +92,17 @@ def retry(operation_name):
 def get_data_from_db():
     logging.info("Fetching data from DB...")
     engine = get_db_engine()
-    # Fetch only NASY_APP (First Time Applicants)
-    query = "SELECT date, geo_code, total_applications FROM asylum_data WHERE applicant_type = 'FRST' ORDER BY date"
+    # Aggregate all citizenships per destination country (geo_code)
+    # This sums total_applications across all citizen_codes for each geo_code and date
+    query = """
+        SELECT date, geo_code, SUM(total_applications) as total_applications 
+        FROM asylum_data 
+        WHERE applicant_type = 'FRST' 
+        GROUP BY date, geo_code 
+        ORDER BY date
+    """
     df = pd.read_sql(query, engine)
+    logging.info(f"Loaded {len(df)} aggregated rows for {df['geo_code'].nunique()} countries")
     return df
 
 def load_latest_model(engine, geo_code):
@@ -296,6 +305,11 @@ def save_predictions(df):
     logging.info("Saving %s predictions...", len(df))
 
     try:
+        # Clear old predictions before inserting new ones
+        with engine.begin() as conn:
+            conn.execute(text("TRUNCATE TABLE risk_predictions"))
+            logging.info("Cleared old predictions.")
+        
         predictions_df = pd.DataFrame(df.to_dict(orient='records'))
         predictions_df.to_sql(
             'risk_predictions',

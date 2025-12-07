@@ -139,14 +139,20 @@ def get_predictions():
 
 @app.get("/api/v1/data/history/{geo_code}")
 def get_history(geo_code: str):
-    """Returns raw applications count for line chart."""
+    """Returns raw applications count for line chart, aggregated by date."""
     query = text(
-        "SELECT date, total_applications FROM asylum_data WHERE geo_code = :geo AND applicant_type='FRST' ORDER BY date"
+        """
+        SELECT date, SUM(total_applications) as total_applications 
+        FROM asylum_data 
+        WHERE geo_code = :geo AND applicant_type='FRST' 
+        GROUP BY date 
+        ORDER BY date
+        """
     )
     try:
         with engine.connect() as conn:
             result = conn.execute(query, {"geo": geo_code})
-            return [{"date": r.date, "total": r.total_applications} for r in result]
+            return [{"date": r.date, "total": int(r.total_applications)} for r in result]
     except Exception as e:
         print(e)
         return []
