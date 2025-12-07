@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 import pandas as pd
 import requests
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from io import StringIO
 import csv
 
@@ -27,22 +27,71 @@ def get_db_engine():
     
     return create_engine(f'postgresql://{db_user}:{db_pass}@{db_host}:5432/{db_name}')
 
-def download_eurostat_tsv():
+def init_meta_table():
+    """Crée la table de métadonnées si elle n'existe pas"""
+    engine = get_db_engine()
+    with engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS harvester_meta (
+                key VARCHAR(50) PRIMARY KEY,
+                value VARCHAR(255),
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.commit()
+
+def get_local_last_modified():
+    """Récupère la date de dernière modif stockée en base"""
+    engine = get_db_engine()
+    try:
+        with engine.connect() as conn:
+            # Vérifier d'abord si la table existe
+            inspector = inspect(engine)
+            if not inspector.has_table("harvester_meta"):
+                return None
+                
+            result = conn.execute(text(
+                "SELECT value FROM harvester_meta WHERE key = 'eurostat_last_modified'"
+            )).fetchone()
+            
+            if result:
+                return result[0]
+    except Exception as e:
+        logging.warning(f"Could not read local meta: {e}")
+    return None
+
+def update_local_last_modified(last_modified_str):
+    """Met à jour la date en base"""
+    engine = get_db_engine()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO harvester_meta (key, value, updated_at) 
+            VALUES ('eurostat_last_modified', :val, NOW())
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        """), {"val": last_modified_str})
+
+def get_remote_details(url):
+    """Récupère les headers du fichier distant sans télécharger"""
+    try:
+        response = requests.head(url, timeout=30)
+        response.raise_for_status()
+        return response.headers.get('Last-Modified'), int(response.headers.get('Content-Length', 0))
+    except Exception as e:
+        logging.error(f"Failed to check remote file: {e}")
+        raise
+
+def download_eurostat_tsv(url):
     """
     Télécharge le fichier TSV complet depuis Eurostat
     Dataset: migr_asyappctzm (Asylum applications by citizenship)
     """
     logging.info("Downloading Eurostat TSV bulk file...")
     
-    # URL du bulk download Eurostat
-    url = "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/migr_asyappctzm/?format=TSV&compressed=false"
-    
     # Download with stream to avoid memory issues and show progress
     local_filename = "/tmp/eurostat_data.tsv"
     try:
         with requests.get(url, stream=True, timeout=120) as r:
             r.raise_for_status()
-            total_size = int(r.headers.get('content-length', 0))
             downloaded = 0
             with open(local_filename, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192): 
@@ -68,6 +117,7 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
     """
     Parse le TSV Eurostat en chunks et sauvegarde au fur et à mesure.
     OPTIMISÉ: Filtre et agrège AVANT le melt pour réduire la consommation mémoire.
+    FIX: dtype=str pour éviter les DtypeVerify warnings
     """
     logging.info("Starting optimized chunked processing...")
     
@@ -90,6 +140,8 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
         columns = header_df.columns.tolist()
         
         # Define iterator
+        # FIX: dtype=str forces all columns to be read as strings initially.
+        # This prevents pandas from inferring int then crashing on ':', 'p', etc.
         chunk_iter = pd.read_csv(
             StringIO(tsv_content), 
             sep='\t', 
@@ -98,7 +150,8 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
             on_bad_lines='warn',
             chunksize=chunk_size,
             names=columns,
-            header=0
+            header=0,
+            dtype=str  # <--- CRITICAL FIX FOR WARNINGS
         )
         
         total_rows = 0
@@ -152,7 +205,9 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
             
             # Convertir les valeurs en numériques (gérer les ': ' et espaces)
             for col in date_cols:
-                df_filtered[col] = df_filtered[col].astype(str).str.replace(r'[^0-9.]', '', regex=True)
+                # remove non-numeric chars except dot
+                df_filtered[col] = df_filtered[col].str.replace(r'[^0-9.]', '', regex=True)
+                # Coerce to numeric, fillna 0, then int
                 df_filtered[col] = pd.to_numeric(df_filtered[col], errors='coerce').fillna(0).astype(int)
             
             # Grouper par geo et sommer toutes les nationalités/sexes/âges
@@ -272,9 +327,29 @@ def run_harvest():
     logging.info("EUROSTAT TSV BULK DOWNLOAD HARVESTER")
     logging.info("=" * 60)
     
+    url = "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/migr_asyappctzm/?format=TSV&compressed=false"
+    
     try:
+        # 0. Init Meta Table
+        init_meta_table()
+        
+        # 0.5 Check Last-Modified
+        logging.info("Checking remote file info...")
+        remote_last_mod, remote_size = get_remote_details(url)
+        local_last_mod = get_local_last_modified()
+        
+        logging.info(f"Remote Last-Modified: {remote_last_mod}")
+        logging.info(f"Local Last-Modified:  {local_last_mod}")
+        
+        if remote_last_mod and remote_last_mod == local_last_mod:
+            logging.info("✅ Data is up to date. No new download needed.")
+            logging.info("=" * 60)
+            return
+
+        logging.info(f"Update detected or first run. Proceeding with download ({remote_size / (1024*1024):.1f} MB)...")
+
         # 1. Télécharger le TSV
-        tsv_content = download_eurostat_tsv()
+        tsv_content = download_eurostat_tsv(url)
         
         # 1.5 Truncate table (mimic replace)
         engine = get_db_engine()
@@ -285,6 +360,11 @@ def run_harvest():
         
         # 2. Parser et Sauvegarder en chunks
         process_and_save_chunked(tsv_content)
+        
+        # 3. Update Last-Modified
+        if remote_last_mod:
+            update_local_last_modified(remote_last_mod)
+            logging.info(f"Updated local Last-Modified to: {remote_last_mod}")
         
         logging.info("=" * 60)
         logging.info("✅ HARVEST COMPLETED SUCCESSFULLY")

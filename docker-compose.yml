@@ -63,9 +63,9 @@ services:
       dockerfile: Dockerfile
     container_name: eu_brp_predictor
     restart: on-failure
-    # Dépend du Harvester pour s'assurer que les données existent
+    # Dépend de la DB pour démarrer. Le script attendra les données.
     depends_on:
-      data_harvester:
+      db:
         condition: service_healthy
     environment:
       DB_HOST: db
@@ -92,7 +92,7 @@ services:
       dockerfile: Dockerfile
     container_name: eu_brp_api
     depends_on:
-      risk_predictor:
+      db:
         condition: service_healthy
     environment:
       DB_HOST: db
