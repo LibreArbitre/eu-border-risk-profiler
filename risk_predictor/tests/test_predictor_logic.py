@@ -1,15 +1,9 @@
-import os
-import sys
 from functools import partial
 
 import pandas as pd
 import pytest
-import risk_predictor as rp
-
-# Allow import from parent directory
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from risk_predictor import calculate_risk_and_predict, compute_data_signature, get_or_train_model
+import risk_predictor.risk_predictor as rp
+from risk_predictor.risk_predictor import calculate_risk_and_predict, compute_data_signature, get_or_train_model
 
 
 class MockEngine:

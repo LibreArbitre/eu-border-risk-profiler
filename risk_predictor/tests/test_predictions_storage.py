@@ -2,7 +2,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 
-import risk_predictor
+import risk_predictor.risk_predictor as risk_predictor
 
 
 SCHEMA_SQL = """
