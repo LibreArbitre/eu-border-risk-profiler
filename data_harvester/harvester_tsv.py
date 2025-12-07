@@ -104,11 +104,23 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
             # Clean columns
             df.columns = df.columns.str.strip()
             
+            # DEBUG: Show first row and columns
+            if i == 0:
+                logging.info(f"DEBUG: Columns = {df.columns.tolist()[:10]}")
+                logging.info(f"DEBUG: First row sample = {df.iloc[0].head(5).to_dict()}")
+            
             # La première colonne contient toutes les dimensions concaténées
             dimension_col = df.columns[0]
             
             # Séparer les dimensions
             dimensions = df[dimension_col].str.split(',', expand=True)
+            
+            # DEBUG: Show dimensions
+            if i == 0:
+                logging.info(f"DEBUG: dimension_col name = '{dimension_col}'")
+                logging.info(f"DEBUG: dimensions.shape = {dimensions.shape}")
+                logging.info(f"DEBUG: First dim row = {dimensions.iloc[0].tolist()}")
+            
             if dimensions.shape[1] == 7:
                 dimensions.columns = ['freq', 'unit', 'citizen', 'sex', 'applicant', 'age', 'geo']
             else:
@@ -124,21 +136,61 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
             
             df_long = df.melt(id_vars=id_vars, var_name='date_raw', value_name='value_raw')
             
+            # DEBUG: After melt
+            if i == 0:
+                logging.info(f"DEBUG: After melt: {len(df_long)} rows")
+                logging.info(f"DEBUG: date_raw samples = {df_long['date_raw'].head(10).tolist()}")
+                logging.info(f"DEBUG: value_raw samples = {df_long['value_raw'].head(10).tolist()}")
+            
             # Filter missing
+            before_filter = len(df_long)
             df_long = df_long[~df_long['value_raw'].isin([':', ': ', 'nan', ''])]
             df_long = df_long.dropna(subset=['value_raw'])
+            if i == 0:
+                logging.info(f"DEBUG: After missing filter: {len(df_long)} rows (removed {before_filter - len(df_long)})")
             
             # Clean values
-            df_long['value_clean'] = df_long['value_raw'].astype(str).str.replace(r'[a-zA-Z\s]', '', regex=True)
+            df_long['value_clean'] = df_long['value_raw'].astype(str).str.replace(r'[a-zA-Z\\s]', '', regex=True)
+            before_clean = len(df_long)
             df_long = df_long[df_long['value_clean'] != '']
+            if i == 0:
+                logging.info(f"DEBUG: After value_clean filter: {len(df_long)} rows (removed {before_clean - len(df_long)})")
+                logging.info(f"DEBUG: value_clean samples = {df_long['value_clean'].head(5).tolist()}")
+            
             df_long['total_applications'] = pd.to_numeric(df_long['value_clean'], errors='coerce').fillna(0).astype(int)
             
-            # Parse dates
-            df_long = df_long[df_long['date_raw'].str.contains('M')]
-            df_long['year'] = df_long['date_raw'].str.split('M').str[0]
-            df_long['month'] = df_long['date_raw'].str.split('M').str[1]
-            df_long['date'] = pd.to_datetime(df_long['year'] + '-' + df_long['month'] + '-01', errors='coerce')
+            # Parse dates - support both YYYY-MM format (e.g., 2008-01) and YYYYMNN format (e.g., 2023M11)
+            # First, detect the format
+            if i == 0:
+                logging.info(f"DEBUG: date_raw first value = '{df_long['date_raw'].iloc[0] if len(df_long) > 0 else 'N/A'}'")
+            
+            # Try YYYY-MM format first (most common now)
+            date_mask_yyyymm = df_long['date_raw'].str.match(r'^\d{4}-\d{2}$', na=False)
+            date_mask_yyyymnn = df_long['date_raw'].str.contains('M', na=False)
+            
+            if i == 0:
+                logging.info(f"DEBUG: Rows matching YYYY-MM: {date_mask_yyyymm.sum()}, YYYYMNN: {date_mask_yyyymnn.sum()}")
+            
+            # Parse YYYY-MM format
+            df_yyyymm = df_long[date_mask_yyyymm].copy()
+            if not df_yyyymm.empty:
+                df_yyyymm['date'] = pd.to_datetime(df_yyyymm['date_raw'] + '-01', format='%Y-%m-%d', errors='coerce')
+            
+            # Parse YYYYMNN format
+            df_yyyymnn = df_long[date_mask_yyyymnn].copy()
+            if not df_yyyymnn.empty:
+                df_yyyymnn['year'] = df_yyyymnn['date_raw'].str.split('M').str[0]
+                df_yyyymnn['month'] = df_yyyymnn['date_raw'].str.split('M').str[1]
+                df_yyyymnn['date'] = pd.to_datetime(df_yyyymnn['year'] + '-' + df_yyyymnn['month'] + '-01', errors='coerce')
+                df_yyyymnn = df_yyyymnn.drop(columns=['year', 'month'], errors='ignore')
+            
+            # Combine results
+            df_long = pd.concat([df_yyyymm, df_yyyymnn], ignore_index=True)
+            
+            before_date2 = len(df_long)
             df_long = df_long.dropna(subset=['date'])
+            if i == 0:
+                logging.info(f"DEBUG: After date parse: {len(df_long)} rows (removed {before_date2 - len(df_long)})")
             
             # Rename
             df_final = df_long.rename(columns={
@@ -146,6 +198,14 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
                 'citizen': 'citizen_code',
                 'applicant': 'applicant_type'
             })
+            
+            # DEBUG: Before filter_data
+            if i == 0:
+                logging.info(f"DEBUG: Before filter_data: {len(df_final)} rows")
+                if len(df_final) > 0:
+                    logging.info(f"DEBUG: applicant_type unique = {df_final['applicant_type'].unique()[:10].tolist()}")
+                    logging.info(f"DEBUG: citizen_code unique = {df_final['citizen_code'].unique()[:10].tolist()}")
+                    logging.info(f"DEBUG: geo_code unique = {df_final['geo_code'].unique()[:10].tolist()}")
             
             # Filter data (FRST, TOTAL, EU)
             df_final = filter_data(df_final)
@@ -174,10 +234,9 @@ def filter_data(df):
         df = df[df['applicant_type'] == 'FRST'].copy()
         logging.info(f"After FRST filter: {len(df)} rows")
     
-    # Filtrer pour TOTAL citizenship (agrégé)
-    if 'citizen_code' in df.columns:
-        df = df[df['citizen_code'] == 'TOTAL'].copy()
-        logging.info(f"After TOTAL filter: {len(df)} rows")
+    # NOTE: On ne filtre plus sur citizen_code == 'TOTAL' car le dataset n'a pas cette valeur agrégée
+    # Le citizen_code contient des codes pays individuels (AD, AE, AF, etc.)
+    # On garde toutes les nationalités pour une analyse complète
     
     # Filtrer pour les 27 pays UE
     eu_countries = ['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 
