@@ -1,6 +1,6 @@
 # EU Border Risk Profiler
 
-The **EU Border Risk Profiler** is a PoC to forecast EU Border Risk Scores. Integrates Eurostat asylum data with a Python/ML model to predict operational pressure M+3. Uses Docker, FastAPI, and PostgreSQL.
+The **EU Border Risk Profiler** is a specialized intelligence system designed to monitor and forecast asylum application pressure at EU external borders. It leverages historical Eurostat data to calculate real-time "Risk Scores" and predict future trends using machine learning.
 
 ![EU Border Risk Profiler Dashboard](dashboard_preview.jpg)
 
