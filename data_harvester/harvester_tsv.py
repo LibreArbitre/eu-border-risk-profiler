@@ -63,14 +63,19 @@ def download_eurostat_tsv():
         logging.error(f"Download failed: {e}")
         raise
 
+
 def process_and_save_chunked(tsv_content, chunk_size=100000):
     """
-    Parse le TSV Eurostat en chunks et sauvegarde au fur et à mesure
+    Parse le TSV Eurostat en chunks et sauvegarde au fur et à mesure.
+    OPTIMISÉ: Filtre et agrège AVANT le melt pour réduire la consommation mémoire.
     """
-    logging.info("Starting chunked processing...")
+    logging.info("Starting optimized chunked processing...")
     
-    # Use C engine for speed, disable quoting to handle backslashes in header
-    # Read in chunks
+    # EU countries to keep
+    EU_COUNTRIES = {'AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 
+                    'FI', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 
+                    'NL', 'PL', 'PT', 'RO', 'SE', 'SI', 'SK'}
+    
     try:
         # First read header to get columns
         header_df = pd.read_csv(
@@ -104,111 +109,78 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
             # Clean columns
             df.columns = df.columns.str.strip()
             
-            # DEBUG: Show first row and columns
-            if i == 0:
-                logging.info(f"DEBUG: Columns = {df.columns.tolist()[:10]}")
-                logging.info(f"DEBUG: First row sample = {df.iloc[0].head(5).to_dict()}")
-            
             # La première colonne contient toutes les dimensions concaténées
             dimension_col = df.columns[0]
             
             # Séparer les dimensions
             dimensions = df[dimension_col].str.split(',', expand=True)
             
-            # DEBUG: Show dimensions
-            if i == 0:
-                logging.info(f"DEBUG: dimension_col name = '{dimension_col}'")
-                logging.info(f"DEBUG: dimensions.shape = {dimensions.shape}")
-                logging.info(f"DEBUG: First dim row = {dimensions.iloc[0].tolist()}")
-            
-            if dimensions.shape[1] == 7:
-                dimensions.columns = ['freq', 'unit', 'citizen', 'sex', 'applicant', 'age', 'geo']
-            else:
-                logging.warning(f"Chunk {i+1}: Unexpected dimensions {dimensions.shape[1]}, skipping chunk")
+            if dimensions.shape[1] != 7:
+                logging.warning(f"Chunk {i+1}: Unexpected dimensions {dimensions.shape[1]}, skipping")
                 continue
-
-            # Assign dimensions back
-            df = pd.concat([dimensions, df.drop(columns=[dimension_col])], axis=1)
             
-            # Melt
-            id_vars = ['freq', 'unit', 'citizen', 'sex', 'applicant', 'age', 'geo']
-            id_vars = [c for c in id_vars if c in df.columns]
+            dimensions.columns = ['freq', 'unit', 'citizen', 'sex', 'applicant', 'age', 'geo']
             
-            df_long = df.melt(id_vars=id_vars, var_name='date_raw', value_name='value_raw')
+            # ==== OPTIMISATION CLEF: Filtrer AVANT le melt ====
+            # 1. Filtrer applicant == 'FRST'
+            frst_mask = dimensions['applicant'] == 'FRST'
+            # 2. Filtrer geo dans EU
+            eu_mask = dimensions['geo'].isin(EU_COUNTRIES)
+            # Combiner les masques
+            valid_mask = frst_mask & eu_mask
             
-            # DEBUG: After melt
-            if i == 0:
-                logging.info(f"DEBUG: After melt: {len(df_long)} rows")
-                logging.info(f"DEBUG: date_raw samples = {df_long['date_raw'].head(10).tolist()}")
-                logging.info(f"DEBUG: value_raw samples = {df_long['value_raw'].head(10).tolist()}")
+            filtered_count = valid_mask.sum()
+            if filtered_count == 0:
+                logging.info(f"Chunk {i+1}: No valid rows after filter, skipping")
+                continue
             
-            # Filter missing
-            before_filter = len(df_long)
-            df_long = df_long[~df_long['value_raw'].isin([':', ': ', 'nan', ''])]
-            df_long = df_long.dropna(subset=['value_raw'])
-            if i == 0:
-                logging.info(f"DEBUG: After missing filter: {len(df_long)} rows (removed {before_filter - len(df_long)})")
+            logging.info(f"Chunk {i+1}: Filtered to {filtered_count} rows (FRST + EU)")
             
-            # Clean values
-            df_long['value_clean'] = df_long['value_raw'].astype(str).str.replace(r'[a-zA-Z\\s]', '', regex=True)
-            before_clean = len(df_long)
-            df_long = df_long[df_long['value_clean'] != '']
-            if i == 0:
-                logging.info(f"DEBUG: After value_clean filter: {len(df_long)} rows (removed {before_clean - len(df_long)})")
-                logging.info(f"DEBUG: value_clean samples = {df_long['value_clean'].head(5).tolist()}")
+            # Appliquer le filtre au DataFrame original
+            df_filtered = df[valid_mask].copy()
+            dimensions_filtered = dimensions[valid_mask].copy()
             
-            df_long['total_applications'] = pd.to_numeric(df_long['value_clean'], errors='coerce').fillna(0).astype(int)
+            # Reconstruire avec dimensions
+            df_filtered = pd.concat([
+                dimensions_filtered[['geo', 'applicant']].reset_index(drop=True), 
+                df_filtered.drop(columns=[dimension_col]).reset_index(drop=True)
+            ], axis=1)
             
-            # Parse dates - support both YYYY-MM format (e.g., 2008-01) and YYYYMNN format (e.g., 2023M11)
-            # First, detect the format
-            if i == 0:
-                logging.info(f"DEBUG: date_raw first value = '{df_long['date_raw'].iloc[0] if len(df_long) > 0 else 'N/A'}'")
+            # ==== OPTIMISATION: Agréger par geo_code AVANT le melt ====
+            # Les colonnes de dates sont tout sauf 'geo' et 'applicant'
+            date_cols = [c for c in df_filtered.columns if c not in ['geo', 'applicant']]
             
-            # Try YYYY-MM format first (most common now)
-            date_mask_yyyymm = df_long['date_raw'].str.match(r'^\d{4}-\d{2}$', na=False)
-            date_mask_yyyymnn = df_long['date_raw'].str.contains('M', na=False)
+            # Convertir les valeurs en numériques (gérer les ': ' et espaces)
+            for col in date_cols:
+                df_filtered[col] = df_filtered[col].astype(str).str.replace(r'[^0-9.]', '', regex=True)
+                df_filtered[col] = pd.to_numeric(df_filtered[col], errors='coerce').fillna(0).astype(int)
             
-            if i == 0:
-                logging.info(f"DEBUG: Rows matching YYYY-MM: {date_mask_yyyymm.sum()}, YYYYMNN: {date_mask_yyyymnn.sum()}")
+            # Grouper par geo et sommer toutes les nationalités/sexes/âges
+            df_agg = df_filtered.groupby('geo')[date_cols].sum().reset_index()
+            df_agg['applicant'] = 'FRST'
             
-            # Parse YYYY-MM format
-            df_yyyymm = df_long[date_mask_yyyymm].copy()
-            if not df_yyyymm.empty:
-                df_yyyymm['date'] = pd.to_datetime(df_yyyymm['date_raw'] + '-01', format='%Y-%m-%d', errors='coerce')
+            logging.info(f"Chunk {i+1}: Aggregated to {len(df_agg)} rows (by geo_code)")
             
-            # Parse YYYYMNN format
-            df_yyyymnn = df_long[date_mask_yyyymnn].copy()
-            if not df_yyyymnn.empty:
-                df_yyyymnn['year'] = df_yyyymnn['date_raw'].str.split('M').str[0]
-                df_yyyymnn['month'] = df_yyyymnn['date_raw'].str.split('M').str[1]
-                df_yyyymnn['date'] = pd.to_datetime(df_yyyymnn['year'] + '-' + df_yyyymnn['month'] + '-01', errors='coerce')
-                df_yyyymnn = df_yyyymnn.drop(columns=['year', 'month'], errors='ignore')
+            # Maintenant le melt sur un DataFrame BEAUCOUP plus petit (27 lignes max)
+            df_long = df_agg.melt(
+                id_vars=['geo', 'applicant'], 
+                var_name='date_raw', 
+                value_name='total_applications'
+            )
             
-            # Combine results
-            df_long = pd.concat([df_yyyymm, df_yyyymnn], ignore_index=True)
-            
-            before_date2 = len(df_long)
+            # Parse dates - support YYYY-MM format
+            df_long = df_long[df_long['date_raw'].str.match(r'^\d{4}-\d{2}$', na=False)]
+            df_long['date'] = pd.to_datetime(df_long['date_raw'] + '-01', format='%Y-%m-%d', errors='coerce')
             df_long = df_long.dropna(subset=['date'])
-            if i == 0:
-                logging.info(f"DEBUG: After date parse: {len(df_long)} rows (removed {before_date2 - len(df_long)})")
             
-            # Rename
+            # Rename et préparer pour la DB
             df_final = df_long.rename(columns={
                 'geo': 'geo_code',
-                'citizen': 'citizen_code',
                 'applicant': 'applicant_type'
             })
             
-            # DEBUG: Before filter_data
-            if i == 0:
-                logging.info(f"DEBUG: Before filter_data: {len(df_final)} rows")
-                if len(df_final) > 0:
-                    logging.info(f"DEBUG: applicant_type unique = {df_final['applicant_type'].unique()[:10].tolist()}")
-                    logging.info(f"DEBUG: citizen_code unique = {df_final['citizen_code'].unique()[:10].tolist()}")
-                    logging.info(f"DEBUG: geo_code unique = {df_final['geo_code'].unique()[:10].tolist()}")
-            
-            # Filter data (FRST, TOTAL, EU)
-            df_final = filter_data(df_final)
+            # Ajouter citizen_code comme 'TOTAL' (agrégé)
+            df_final['citizen_code'] = 'TOTAL'
             
             # Select final columns
             final_cols = ['date', 'geo_code', 'citizen_code', 'applicant_type', 'total_applications']
@@ -216,6 +188,10 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
                 df_final = df_final[final_cols]
                 save_to_db(df_final)
                 total_rows += len(df_final)
+                logging.info(f"Chunk {i+1}: Saved {len(df_final)} records")
+            
+            # Libérer la mémoire
+            del df, dimensions, df_filtered, dimensions_filtered, df_agg, df_long, df_final
             
         logging.info(f"Total records saved: {total_rows}")
             
