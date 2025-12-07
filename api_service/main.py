@@ -1,8 +1,8 @@
 import os
-from typing import Optional
-
+from typing import Optional, List
 from fastapi import FastAPI, HTTPException, Query
 from sqlalchemy import create_engine, text
+from models import RiskPredictionResponse, HistoryPoint, CurrentRiskResponse
 
 app = FastAPI(title="EU Border Risk Profiler API")
 
@@ -27,8 +27,8 @@ def healthcheck():
         raise HTTPException(status_code=503, detail=str(exc))
 
 
-@app.get("/api/v1/risk/current")
-@app.get("/api/v1/risk/latest")
+@app.get("/api/v1/risk/current", response_model=List[CurrentRiskResponse])
+@app.get("/api/v1/risk/latest", response_model=List[CurrentRiskResponse])
 def get_current_risk(
     threshold: Optional[float] = Query(
         None, ge=0, description="Exclude predictions with a risk score above this value."
@@ -123,7 +123,7 @@ def get_current_risk(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/api/v1/risk/predict")
+@app.get("/api/v1/risk/predict", response_model=List[RiskPredictionResponse])
 def get_predictions():
     """Returns predictions for M+1..M+3."""
     # Logic: Get predictions from the latest run
@@ -156,7 +156,7 @@ def get_predictions():
         return []
 
 
-@app.get("/api/v1/data/history/{geo_code}")
+@app.get("/api/v1/data/history/{geo_code}", response_model=List[HistoryPoint])
 def get_history(geo_code: str):
     """Returns raw applications count for line chart, aggregated by date."""
     query = text(

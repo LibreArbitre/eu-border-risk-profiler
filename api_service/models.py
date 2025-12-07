@@ -1,17 +1,32 @@
-# Fichier: api_service/models.py
 from datetime import date
 from typing import Optional
-
 from pydantic import BaseModel
 
-
-class RiskPrediction(BaseModel):
+class RiskPredictionResponse(BaseModel):
     """
-    Modèle Pydantic pour les résultats de la prédiction des risques.
+    Schema for risk prediction data.
     """
-
     geo_code: str
-    prediction_target_month: date
+    risk_score_calculated: float
     predicted_risk_score: float
-    model_version: Optional[str] = None
-    prediction_date: date
+    date: date
+    prediction_target_month: date
+    type: str = "predicted"
+
+class HistoryPoint(BaseModel):
+    """
+    Schema for historical data points.
+    """
+    date: date
+    total: int
+
+class CurrentRiskResponse(BaseModel):
+    """
+    Schema for current/latest risk assessment with analysis.
+    """
+    geo_code: str
+    risk_score: float
+    prediction_target_month: date
+    horizon_months: int
+    percent_change: Optional[float] = None
+    type: str = "predicted"
