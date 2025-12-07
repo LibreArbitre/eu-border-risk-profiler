@@ -1,8 +1,10 @@
 import os
-from typing import Optional, List
+from collections import defaultdict
+from datetime import date, datetime
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Query
 from sqlalchemy import create_engine, text
-from models import RiskPredictionResponse, HistoryPoint, CurrentRiskResponse
+from .models import RiskPredictionResponse, HistoryPoint, CurrentRiskResponse
 
 app = FastAPI(title="EU Border Risk Profiler API")
 
@@ -11,9 +13,59 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
 DB_NAME = os.getenv("DB_NAME", "eubrp_db")
 DB_HOST = os.getenv("DB_HOST", "db")
 DB_PORT = os.getenv("DB_PORT", "5432")
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
 
 engine = create_engine(DATABASE_URL)
+
+
+def _coerce_date(value):
+    if isinstance(value, str):
+        return datetime.fromisoformat(value).date()
+    if isinstance(value, datetime):
+        return value.date()
+    return value
+
+
+def _months_between(start_date: date, end_date: date) -> int:
+    start = _coerce_date(start_date)
+    end = _coerce_date(end_date)
+    return (end.year - start.year) * 12 + (end.month - start.month)
+
+
+def _select_best_snapshot(conn) -> Optional[Dict[str, Any]]:
+    snapshot_query = text(
+        """
+        SELECT run_id, MAX(prediction_date) AS prediction_date, COUNT(*) AS row_count
+        FROM risk_predictions
+        WHERE predicted_risk_score IS NOT NULL
+        GROUP BY run_id
+        ORDER BY row_count DESC, prediction_date DESC
+        LIMIT 1
+        """
+    )
+    result = conn.execute(snapshot_query).fetchone()
+    if not result:
+        return None
+
+    return {
+        "run_id": result.run_id,
+        "prediction_date": result.prediction_date,
+        "row_count": result.row_count,
+    }
+
+
+def _fetch_predictions_for_run(conn, run_id: str):
+    query = text(
+        """
+        SELECT geo_code, predicted_risk_score, prediction_target_month, date
+        FROM risk_predictions
+        WHERE run_id = :run_id AND predicted_risk_score IS NOT NULL
+        ORDER BY geo_code, prediction_target_month
+        """
+    )
+    return conn.execute(query, {"run_id": run_id}).fetchall()
 
 
 @app.get("/health")
@@ -49,74 +101,48 @@ def get_current_risk(
     (`date`) and the `prediction_target_month`.
     """
 
-    query = text(
-        """
-        WITH snapshot AS (
-            SELECT
-                prediction_date,
-                COUNT(*) AS row_count
-            FROM risk_predictions
-            WHERE predicted_risk_score IS NOT NULL
-            GROUP BY prediction_date
-        ),
-        selected_snapshot AS (
-            SELECT prediction_date
-            FROM snapshot
-            ORDER BY row_count DESC, prediction_date DESC
-            LIMIT 1
-        ),
-        latest_predictions AS (
-            SELECT
-                rp.geo_code,
-                rp.predicted_risk_score,
-                rp.prediction_target_month,
-                rp.date,
-                (
-                    (EXTRACT(YEAR FROM rp.prediction_target_month) * 12 + EXTRACT(MONTH FROM rp.prediction_target_month))
-                    - (EXTRACT(YEAR FROM rp.date) * 12 + EXTRACT(MONTH FROM rp.date))
-                ) AS horizon_months,
-                LAG(rp.predicted_risk_score) OVER (
-                    PARTITION BY rp.geo_code
-                    ORDER BY rp.prediction_target_month
-                ) AS previous_score
-            FROM risk_predictions rp
-            JOIN selected_snapshot ss ON rp.prediction_date = ss.prediction_date
-            WHERE rp.predicted_risk_score IS NOT NULL
-        )
-        SELECT
-            geo_code,
-            predicted_risk_score AS score,
-            prediction_target_month,
-            horizon_months,
-            CASE
-                WHEN previous_score IS NULL OR previous_score = 0 THEN NULL
-                ELSE ((predicted_risk_score - previous_score) / previous_score) * 100
-            END AS pct_change
-        FROM latest_predictions
-        WHERE (:horizon IS NULL OR horizon_months = :horizon)
-          AND (:threshold IS NULL OR predicted_risk_score <= :threshold)
-        ORDER BY geo_code, prediction_target_month
-        """
-    )
-
     try:
         with engine.connect() as conn:
-            result = conn.execute(query, {"horizon": horizon, "threshold": threshold})
-            rows = result.fetchall()
+            snapshot = _select_best_snapshot(conn)
+            if not snapshot:
+                raise HTTPException(status_code=404, detail="No predictions found")
+
+            rows = _fetch_predictions_for_run(conn, snapshot["run_id"])
             if not rows:
                 raise HTTPException(status_code=404, detail="No predictions found")
 
-            return [
-                {
-                    "geo_code": row.geo_code,
-                    "risk_score": float(row.score),
-                    "prediction_target_month": row.prediction_target_month,
-                    "horizon_months": int(row.horizon_months),
-                    "percent_change": float(row.pct_change) if row.pct_change is not None else None,
-                    "type": "predicted",
-                }
-                for row in rows
-            ]
+            previous_scores: Dict[str, Optional[float]] = defaultdict(lambda: None)
+            response = []
+
+            for row in rows:
+                horizon_months = _months_between(row.date, row.prediction_target_month)
+                pct_change = None
+                prev_score = previous_scores[row.geo_code]
+                if prev_score not in (None, 0):
+                    pct_change = ((row.predicted_risk_score - prev_score) / prev_score) * 100
+
+                previous_scores[row.geo_code] = row.predicted_risk_score
+
+                if horizon is not None and horizon_months != horizon:
+                    continue
+                if threshold is not None and row.predicted_risk_score > threshold:
+                    continue
+
+                response.append(
+                    {
+                        "geo_code": row.geo_code,
+                        "risk_score": float(row.predicted_risk_score),
+                        "prediction_target_month": row.prediction_target_month,
+                        "horizon_months": int(horizon_months),
+                        "percent_change": float(pct_change) if pct_change is not None else None,
+                        "type": "predicted",
+                    }
+                )
+
+            if not response:
+                raise HTTPException(status_code=404, detail="No predictions found")
+
+            return response
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - runtime behavior
@@ -126,20 +152,25 @@ def get_current_risk(
 @app.get("/api/v1/risk/predict", response_model=List[RiskPredictionResponse])
 def get_predictions():
     """Returns predictions for M+1..M+3."""
-    # Logic: Get predictions from the latest run
-    query = """
-    WITH latest_date_per_geo AS (
-        SELECT geo_code, MAX(date) as max_date
-        FROM risk_predictions
-        GROUP BY geo_code
-    )
-    SELECT rp.geo_code, rp.risk_score_calculated, rp.predicted_risk_score, rp.date, rp.prediction_target_month
-    FROM risk_predictions rp
-    JOIN latest_date_per_geo ld ON rp.geo_code = ld.geo_code AND rp.date = ld.max_date
-    """
     try:
         with engine.connect() as conn:
-            result = conn.execute(text(query))
+            snapshot = _select_best_snapshot(conn)
+            if not snapshot:
+                raise HTTPException(status_code=404, detail="No predictions found")
+
+            query = text(
+                """
+                SELECT geo_code, risk_score_calculated, predicted_risk_score, date, prediction_target_month
+                FROM risk_predictions
+                WHERE run_id = :run_id
+                ORDER BY geo_code, prediction_target_month
+                """
+            )
+            result = conn.execute(query, {"run_id": snapshot["run_id"]})
+            rows = result.fetchall()
+            if not rows:
+                raise HTTPException(status_code=404, detail="No predictions found")
+
             return [
                 {
                     "geo_code": r.geo_code,
@@ -149,11 +180,12 @@ def get_predictions():
                     "prediction_target_month": r.prediction_target_month,
                     "type": "predicted",
                 }
-                for r in result
+                for r in rows
             ]
-    except Exception as e:
-        print(e)
-        return []
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - runtime behavior
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/api/v1/data/history/{geo_code}", response_model=List[HistoryPoint])
