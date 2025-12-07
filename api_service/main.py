@@ -4,7 +4,7 @@ from typing import Optional, List
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
-from .models import RiskPredictionResponse, HistoryPoint, CurrentRiskResponse
+from api_service.models import RiskPredictionResponse, HistoryPoint, CurrentRiskResponse
 
 
 logging.basicConfig(
