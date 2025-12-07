@@ -2,9 +2,9 @@
 
 The **EU Border Risk Profiler** is a specialized intelligence system designed to monitor and forecast asylum application pressure at EU external borders. It leverages historical Eurostat data to calculate real-time "Risk Scores" and predict future trends using machine learning.
 
-![EU Border Risk Profiler Dashboard](dashboard_preview.png)
+![EU Border Risk Profiler Dashboard](dashboard_preview.jpg)
 
-## 🚀 Key Features
+## Key Features
 
 *   **Advanced Risk Scoring**: Uses a logarithmic global normalization formula to identify high-risk zones without being skewed by historical outliers (e.g., the 2015 crisis).
     *   `Risk = (log(Volume) / log(Global_Max)) * (1 + Trend_Variation)`
@@ -12,7 +12,7 @@ The **EU Border Risk Profiler** is a specialized intelligence system designed to
 *   **Predictive Modeling**: Trains lightweight Random Forest regressors for each of the 27 EU countries to forecast pressure 3 months ahead.
 *   **Modern Dashboard**: A "Situation Room" style interface built with Streamlit, featuring dynamic heatmaps, risk rankings, and country-level deep dives.
 
-## 🛠️ System Architecture
+## System Architecture
 
 The solution adheres to a microservices architecture orchestrated by Docker Compose:
 
@@ -30,7 +30,7 @@ The solution adheres to a microservices architecture orchestrated by Docker Comp
 4.  **Dashboard** (`dashboard`): Streamlit frontend for visualization.
 5.  **PostgreSQL** (`db`): Central persistence layer.
 
-## 💻 System Requirements
+## System Requirements
 
 This project is optimized for efficiency and does **not** require heavy hardware or GPUs. The "lightweight" ML approach (Decision Trees vs Deep Learning) allows it to run on minimal infrastructure.
 
@@ -39,7 +39,7 @@ This project is optimized for efficiency and does **not** require heavy hardware
 *   **GPU**: Not required (Scikit-learn runs on CPU)
 *   **Storage**: 5 GB (Docker images + DB volume)
 
-## 🚦 Quick Start
+## Quick Start
 
 1.  **Prerequisites**: Docker & Docker Compose.
 2.  **Configuration**: Check `.env` (or copy `.env.example`) to set your DB credentials.
@@ -51,7 +51,7 @@ This project is optimized for efficiency and does **not** require heavy hardware
     *   **Dashboard**: `http://localhost:8501`
     *   **API Docs**: `http://localhost:8000/docs`
 
-## 🧠 Methodology
+## Methodology
 
 ### The Risk Formula
 The system calculates a "Risk Score" (0-100) for every country/month:
@@ -63,7 +63,7 @@ The system calculates a "Risk Score" (0-100) for every country/month:
 *   **Target**: One model per country, trained on 60 months of historical data.
 *   **Retraining Strategy**: The system attempts to load an existing model (`model_registry`). If new data is detected during the daily run, it automatically triggers a retraining cycle to keep forecasts accurate.
 
-## 📂 Project Structure
+## Project Structure
 
 ```
 eu-border-risk-profiler/
@@ -75,7 +75,7 @@ eu-border-risk-profiler/
 └── OPERATIONS_GUIDE.md # Detailed runbook
 ```
 
-## 🛡️ License
+## License
 
 **MIT License**
 

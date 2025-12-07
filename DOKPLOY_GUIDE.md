@@ -1,187 +1,117 @@
-# Guide de Démarrage Rapide - Dokploy
+# Quick Start Guide - Dokploy
 
-## 🚀 Déploiement sur Dokploy
+## 🚀 Deployment on Dokploy
 
-### Prérequis
-- Dokploy installé et opérationnel
-- Port `5432`, `8000`, `8501` disponibles (ou modifiés dans docker-compose.yml)
+### Prerequisites
+- Dokploy installed and running.
+- Ports `5432`, `8000`, `8501` available (or modified in `docker-compose.yml`).
 
-### Étapes de déploiement
+### Deployment Steps
 
-#### 1. Créer un nouveau projet dans Dokploy
+#### 1. Create a New Project in Dokploy
 ```bash
-# Si vous utilisez Git, poussez le projet sur votre dépôt
+# If using Git, push the project to your repository
 git add .
 git commit -m "Initial commit - EU Border Risk Profiler"
 git push origin main
 ```
 
-#### 2. Configurer les variables d'environnement dans Dokploy
+#### 2. Configure Environment Variables in Dokploy
 
-Dans l'interface Dokploy, configurez les variables suivantes :
+In the Dokploy interface, configure the following variables:
 
-**Variables obligatoires :**
+**Mandatory Variables:**
 ```
 DB_USER=eubrp_user
-DB_PASSWORD=CHANGEZ_MOI_AVEC_UN_MOT_DE_PASSE_FORT
+DB_PASSWORD=CHANGE_ME_WITH_A_STRONG_PASSWORD
 DB_NAME=eubrp_db
 DB_HOST=db
 ```
 
-**Variables optionnelles (avec valeurs par défaut) :**
+**Optional Variables (with defaults):**
 ```
 RETRY_MAX_ATTEMPTS=3
 RETRY_BACKOFF_SECONDS=2
 EXIT_ON_FAILURE=true
 ```
 
-#### 3. Ordre de démarrage des services
+#### 3. Service Startup Order
 
-Les services se lancent automatiquement dans l'ordre suivant grâce aux `depends_on` :
+Services automatically start in the following order thanks to `depends_on`:
 
-1. **db** (PostgreSQL) - démarre en premier
-2. **data_harvester** - attend que la BDD soit healthy
-3. **risk_predictor** - attend que le harvester réussisse
-4. **api_service** - attend que le predictor réussisse
-5. **dashboard** - attend que l'API soit healthy
+1.  **db** (PostgreSQL) - starts first
+2.  **data_harvester** - waits for DB to be healthy
+3.  **risk_predictor** - waits for harvester to succeed
+4.  **api_service** - waits for predictor to succeed
+5.  **dashboard** - waits for API to be healthy
 
-#### 4. Vérifier que tout fonctionne
+#### 4. Verify Functionality
 
-Une fois déployé, vérifiez les services :
+Once deployed, verify the services:
 
-**API Health Check :**
+**API Health Check:**
 ```bash
-curl https://votre-domaine.com:8000/health
-# Devrait retourner: {"status":"ok"}
+curl https://your-domain.com:8000/health
+# Should return: {"status":"ok"}
 ```
 
-**Swagger UI :**
-Ouvrez `https://votre-domaine.com:8000/docs` dans votre navigateur
+**Swagger UI:**
+Open `https://your-domain.com:8000/docs` in your browser.
 
-**Dashboard Streamlit :**
-Ouvrez `https://votre-domaine.com:8501` dans votre navigateur
+**Streamlit Dashboard:**
+Open `https://your-domain.com:8501` in your browser.
 
-#### 5. Vérifier les logs dans Dokploy
+#### 5. Check Logs in Dokploy
 
-Si un service ne démarre pas, consultez les logs :
+If a service fails to start, check the logs:
 
-1. **db** : Devrait afficher `database system is ready to accept connections`
-2. **data_harvester** : Cherchez `Fetching data from Eurostat...` puis `Data saved successfully`
-3. **risk_predictor** : Cherchez `Processing X countries...` puis `Predictions saved`
-4. **api_service** : Devrait afficher `Application startup complete`
-5. **dashboard** : Devrait afficher `You can now view your Streamlit app in your browser`
+1.  **db**: Should show `database system is ready to accept connections`
+2.  **data_harvester**: Look for `Fetching data from Eurostat...` then `Data saved successfully`
+3.  **risk_predictor**: Look for `Processing X countries...` then `Predictions saved`
+4.  **api_service**: Should show `Application startup complete`
+5.  **dashboard**: Should show `You can now view your Streamlit app in your browser`
 
-### 🔍 Diagnostic des problèmes courants
+### 🔍 Troubleshooting Common Issues
 
-#### Problème : Harvester ne démarre pas
-**Symptôme :** Container `data_harvester` en restart loop
+#### Issue: Harvester does not start
+**Symptom:** `data_harvester` container in restart loop
+**Solutions:**
+1.  Verify PostgreSQL is accessible: `docker logs eu_brp_db`
+2.  Check DB credentials in environment variables
+3.  Manually test connection: `docker exec -it eu_brp_db psql -U user -d eubrp_db -c "SELECT 1"`
 
-**Solutions :**
-1. Vérifiez que PostgreSQL est accessible :
-   ```bash
-   docker logs eu_brp_db
-   ```
-2. Vérifiez les credentials de BDD dans les variables d'environnement
-3. Testez manuellement la connexion :
-   ```bash
-   docker exec -it eu_brp_db psql -U user -d eubrp_db -c "SELECT 1"
-   ```
+#### Issue: Predictor crashes on startup
+**Symptom:** `risk_predictor` container exits with functionality
+**Checks:**
+1.  Check predictor logs: `docker logs eu_brp_predictor`
+2.  Verify data presence: `docker exec -it eu_brp_db psql -U user -d eubrp_db -c "SELECT COUNT(*) FROM asylum_data"`
 
-#### Problème : Predictor crash au démarrage
-**Symptôme :** Container `risk_predictor` exit avec erreur
+#### Issue: API unresponsive
+**Symptom:** Timeout or 502 Bad Gateway
+**Solutions:**
+1.  Verify predictor finished successfully
+2.  Check API logs: `docker logs eu_brp_api`
+3.  Test from inside Docker network: `docker exec eu_brp_api curl http://localhost:8000/health`
 
-**Causes possibles corrigées dans cette version :**
-- ✅ Import `pickle` manquant (corrigé)
-- ✅ Table `model_registry_table` non définie (corrigé)
-- ✅ Paramètre `engine` non passé (corrigé)
+#### Issue: Dashboard not loading data
+**Symptom:** "No prediction data available" message
+**Solutions:**
+1.  Check API accessibility from dashboard: `docker exec eu_brp_dashboard curl http://api_service:8000/api/v1/risk/latest`
+2.  Wait for harvester/predictor to complete at least one full cycle (5-10 mins)
+3.  Check DB data: `docker exec -it eu_brp_db psql -U user -d eubrp_db -c "SELECT COUNT(*) FROM risk_predictions"`
 
-**Vérifications :**
-```bash
-# Vérifier les logs du predictor
-docker logs eu_brp_predictor
+### 📊 Data Flow Understanding
+`Eurostat API` -> `Harvester` -> `PostgreSQL` -> `Predictor` -> `PostgreSQL` -> `API` -> `Dashboard`
 
-# Vérifier que les données sont présentes
-docker exec -it eu_brp_db psql -U user -d eubrp_db -c "SELECT COUNT(*) FROM asylum_data"
-```
+### ⏱️ Expected Wait Times
+- **First Full Startup**: 10-15 minutes
+    - DB Init: 30s
+    - Harvester: 2-5 mins
+    - Predictor: 5-10 mins
+    - API/Dashboard: < 1 min
 
-#### Problème : API ne répond pas
-**Symptôme :** Timeout ou 502 Bad Gateway
-
-**Solutions :**
-1. Vérifiez que le predictor a terminé avec succès
-2. Vérifiez les logs de l'API :
-   ```bash
-   docker logs eu_brp_api
-   ```
-3. Testez depuis l'intérieur du réseau Docker :
-   ```bash
-   docker exec eu_brp_api curl http://localhost:8000/health
-   ```
-
-#### Problème : Dashboard ne charge pas les données
-**Symptôme :** Message "No prediction data available"
-
-**Solutions :**
-1. Vérifiez que l'API est accessible depuis le dashboard :
-   ```bash
-   docker exec eu_brp_dashboard curl http://api_service:8000/api/v1/risk/latest
-   ```
-2. Attendez que le harvester et predictor aient terminé au moins un cycle complet (peut prendre 5-10 minutes)
-3. Vérifiez les données dans PostgreSQL :
-   ```bash
-   docker exec -it eu_brp_db psql -U user -d eubrp_db -c "SELECT COUNT(*) FROM risk_predictions"
-   ```
-
-### 📊 Comprendre le flux de données
-
-```
-Eurostat API (public, gratuit)
-    ↓
-data_harvester (récupère les données d'asile mensuelles)
-    ↓
-PostgreSQL (table: asylum_data)
-    ↓
-risk_predictor (calcule les scores de risque et entraîne le modèle ML)
-    ↓
-PostgreSQL (tables: risk_predictions, model_registry)
-    ↓
-api_service (expose les données via REST)
-    ↓
-dashboard (visualisation Streamlit)
-```
-
-### ⏱️ Temps d'attente attendus
-
-- **Premier démarrage complet :** 10-15 minutes
-  - DB init : 30 secondes
-  - Harvester (download + insert) : 2-5 minutes
-  - Predictor (calcul + ML training) : 5-10 minutes
-  - API startup : 10 secondes
-  - Dashboard startup : 30 secondes
-
-### 🔄 Redémarrer manuellement un service
-
-Si vous devez forcer un re-harvest ou re-prediction :
-
-```bash
-# Redémarrer le harvester
-docker restart eu_brp_harvester
-
-# Redémarrer le predictor
-docker restart eu_brp_predictor
-```
-
-### 📝 Prochaines étapes recommandées
-
-1. **Sécurité :** Changer le mot de passe PostgreSQL par défaut
-2. **Monitoring :** Ajouter des alertes sur les health checks
-3. **Backup :** Configurer des sauvegardes PostgreSQL régulières
-4. **Tests :** Ajouter des tests unitaires (voir IMPLEMENTATION_PLAN_STATUS.md)
-5. **Performance :** Ajouter un cache Redis pour l'API si nécessaire
-
----
-
-**Besoin d'aide ?** Consultez :
-- [README.md](README.md) pour l'architecture
-- [OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) pour les opérations
-- Logs Dokploy pour le diagnostic en temps réel
+### 📝 Recommended Next Steps
+1.  **Security**: Change default PostgreSQL password
+2.  **Monitoring**: Add alerts on health checks
+3.  **Backup**: Configure regular PostgreSQL backups
+4.  **Performance**: Add Redis cache for API if needed
