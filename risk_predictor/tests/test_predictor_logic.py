@@ -1,12 +1,15 @@
 import os
 import sys
+from functools import partial
 
 import pandas as pd
+import pytest
+import risk_predictor as rp
 
 # Allow import from parent directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from risk_predictor import calculate_risk_and_predict
+from risk_predictor import calculate_risk_and_predict, compute_data_signature, get_or_train_model
 
 
 class MockEngine:
@@ -34,6 +37,14 @@ class MockResult:
 
     def fetchone(self):
         return None  # Mock no existing model
+
+
+class DummyModel:
+    def __init__(self, value=1.0):
+        self.value = value
+
+    def predict(self, features):  # noqa: ARG002 - signature aligned with sklearn
+        return [self.value for _ in range(len(features))]
 
 
 def test_risk_calculation_nominal():
@@ -109,3 +120,60 @@ def test_zero_division_protection():
         geo_c = results[results["geo_code"] == "GEO_C"]
         if not geo_c.empty:
             assert geo_c.iloc[-1]["risk_score_calculated"] == 0
+
+
+def test_reuse_model_when_data_signature_matches(monkeypatch):
+    dates = pd.date_range(start="2023-01-01", periods=15, freq="MS")
+    data = [{"date": d, "geo_code": "GEO_REUSE", "total_applications": 50 + i} for i, d in enumerate(dates)]
+    df = pd.DataFrame(data)
+
+    reused_model = DummyModel(value=12.0)
+    reuse_signature = "stable-hash"
+    was_trained = {"called": False}
+
+    def fake_loader(engine, geo_code):  # noqa: ARG001 - engine unused in mock
+        return reused_model, 99, pd.Timestamp.utcnow().to_pydatetime().replace(tzinfo=None), {
+            "data_signature": reuse_signature
+        }
+
+    def fake_persister(engine, geo_code, model, metadata):  # noqa: ARG001 - engine unused in mock
+        pytest.fail("Persist should not be called when reusing model")
+
+    def fake_train(train_df):  # noqa: ARG001 - train_df unused in mock
+        was_trained["called"] = True
+        return DummyModel(value=0.0)
+
+    monkeypatch.setattr(rp, "load_latest_model", fake_loader)
+    monkeypatch.setattr(rp, "persist_model", fake_persister)
+    monkeypatch.setattr(rp, "compute_data_signature", lambda df: reuse_signature)
+    monkeypatch.setattr(rp, "train_model", fake_train)
+    monkeypatch.setattr(
+        rp,
+        "get_or_train_model",
+        partial(get_or_train_model, loader=fake_loader, persister=fake_persister),
+    )
+
+    engine = MockEngine()
+
+    results = calculate_risk_and_predict(df, engine)
+
+    assert not was_trained["called"], "Training should be skipped when data signature matches"
+    assert not results.empty
+    assert all(results["predicted_risk_score"] == reused_model.value)
+
+    # Direct call still reports reuse
+    model, model_id, info = rp.get_or_train_model(
+        engine,
+        "GEO_REUSE",
+        df.assign(
+            risk_score=1.0,
+            lag_1=1.0,
+            lag_2=1.0,
+            lag_3=1.0,
+            month=df["date"].dt.month,
+        ),
+    )
+
+    assert model is reused_model
+    assert model_id == 99
+    assert info["reused"] is True
