@@ -4,9 +4,12 @@ import os
 import pickle
 import sys
 import time
-import schedule
-import pandas as pd
+from datetime import datetime
+
 import numpy as np
+import pandas as pd
+import schedule
+from sklearn.ensemble import RandomForestRegressor
 from sqlalchemy import (
     JSON,
     Column,
@@ -14,27 +17,25 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     MetaData,
-    Table,
     String,
+    Table,
     create_engine,
     select,
     text,
 )
 from sqlalchemy.dialects.postgresql import insert
-from sklearn.ensemble import RandomForestRegressor
-from datetime import datetime
 
 # Config
-DB_USER = os.getenv('DB_USER', 'user')
-DB_PASSWORD = os.getenv('DB_PASSWORD', 'password')
-DB_NAME = os.getenv('DB_NAME', 'eubrp_db')
-DB_HOST = os.getenv('DB_HOST', 'db')
-DB_PORT = os.getenv('DB_PORT', '5432')
+DB_USER = os.getenv("DB_USER", "user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
+DB_NAME = os.getenv("DB_NAME", "eubrp_db")
+DB_HOST = os.getenv("DB_HOST", "db")
+DB_PORT = os.getenv("DB_PORT", "5432")
 
-RETRY_MAX_ATTEMPTS = int(os.getenv('RETRY_MAX_ATTEMPTS', '3'))
-RETRY_BACKOFF_SECONDS = float(os.getenv('RETRY_BACKOFF_SECONDS', '2'))
-EXIT_ON_FAILURE = os.getenv('EXIT_ON_FAILURE', 'true').lower() == 'true'
-HEALTH_FILE = os.getenv('PREDICTOR_HEALTH_FILE', '/tmp/predictor_health')
+RETRY_MAX_ATTEMPTS = int(os.getenv("RETRY_MAX_ATTEMPTS", "3"))
+RETRY_BACKOFF_SECONDS = float(os.getenv("RETRY_BACKOFF_SECONDS", "2"))
+EXIT_ON_FAILURE = os.getenv("EXIT_ON_FAILURE", "true").lower() == "true"
+HEALTH_FILE = os.getenv("PREDICTOR_HEALTH_FILE", "/tmp/predictor_health")
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
@@ -44,24 +45,26 @@ MODEL_HYPERPARAMS = {"n_estimators": 50, "random_state": 42}
 # Define SQLAlchemy table for model registry
 metadata = MetaData()
 model_registry_table = Table(
-    'model_registry',
+    "model_registry",
     metadata,
-    Column('id', Integer, primary_key=True),
-    Column('model_name', String(100), nullable=False),
-    Column('geo_code', String(10), nullable=False),
-    Column('model_version', String(50), nullable=False),
-    Column('trained_at', DateTime, nullable=False),
-    Column('hyperparameters', JSON),
-    Column('model_artifact', LargeBinary, nullable=False)
+    Column("id", Integer, primary_key=True),
+    Column("model_name", String(100), nullable=False),
+    Column("geo_code", String(10), nullable=False),
+    Column("model_version", String(50), nullable=False),
+    Column("trained_at", DateTime, nullable=False),
+    Column("hyperparameters", JSON),
+    Column("model_artifact", LargeBinary, nullable=False),
 )
+
 
 def get_db_engine():
     return create_engine(DATABASE_URL)
 
+
 def configure_logging():
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] %(message)s',
+        format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
 
@@ -84,7 +87,9 @@ def retry(operation_name):
                         raise
                     time.sleep(delay)
                     delay *= 2
+
         return wrapper
+
     return decorator
 
 
@@ -105,17 +110,14 @@ def get_data_from_db():
     logging.info(f"Loaded {len(df)} aggregated rows for {df['geo_code'].nunique()} countries")
     return df
 
+
 def load_latest_model(engine, geo_code):
     try:
         with engine.connect() as conn:
             result = conn.execute(
-                select(
-                    model_registry_table.c.id,
-                    model_registry_table.c.model_artifact
-                )
+                select(model_registry_table.c.id, model_registry_table.c.model_artifact)
                 .where(
-                    (model_registry_table.c.model_name == MODEL_NAME)
-                    & (model_registry_table.c.geo_code == geo_code)
+                    (model_registry_table.c.model_name == MODEL_NAME) & (model_registry_table.c.geo_code == geo_code)
                 )
                 .order_by(model_registry_table.c.trained_at.desc())
                 .limit(1)
@@ -132,20 +134,16 @@ def load_latest_model(engine, geo_code):
 def persist_model(engine, geo_code, model):
     try:
         payload = {
-            'model_name': MODEL_NAME,
-            'geo_code': geo_code,
-            'model_version': datetime.utcnow().strftime("v%Y%m%d%H%M%S"),
-            'trained_at': datetime.utcnow(),
-            'hyperparameters': MODEL_HYPERPARAMS,
-            'model_artifact': pickle.dumps(model)
+            "model_name": MODEL_NAME,
+            "geo_code": geo_code,
+            "model_version": datetime.utcnow().strftime("v%Y%m%d%H%M%S"),
+            "trained_at": datetime.utcnow(),
+            "hyperparameters": MODEL_HYPERPARAMS,
+            "model_artifact": pickle.dumps(model),
         }
 
         with engine.begin() as conn:
-            result = conn.execute(
-                insert(model_registry_table)
-                .returning(model_registry_table.c.id),
-                [payload]
-            )
+            result = conn.execute(insert(model_registry_table).returning(model_registry_table.c.id), [payload])
             model_id = result.scalar()
             print(f"Persisted new model for {geo_code} with id {model_id}", flush=True)
             return model_id
@@ -156,7 +154,7 @@ def persist_model(engine, geo_code, model):
 
 def train_model(train_df):
     model = RandomForestRegressor(**MODEL_HYPERPARAMS)
-    model.fit(train_df[['lag_1', 'lag_2', 'lag_3', 'month']], train_df['risk_score'])
+    model.fit(train_df[["lag_1", "lag_2", "lag_3", "month"]], train_df["risk_score"])
     return model
 
 
@@ -183,29 +181,30 @@ def calculate_risk_and_predict(df, engine):
     predictions = []
 
     # Ensure date is datetime
-    df['date'] = pd.to_datetime(df['date'])
+    df["date"] = pd.to_datetime(df["date"])
 
     # Calculate Global Max Volume for normalization (User Request: Global consistency)
-    global_max_vol = df['total_applications'].max()
-    if global_max_vol == 0: global_max_vol = 1
+    global_max_vol = df["total_applications"].max()
+    if global_max_vol == 0:
+        global_max_vol = 1
     # Logarithmic Scale for Global Max (to handle 2015 crisis outlier)
     global_max_log = np.log1p(global_max_vol)
     logging.info("Global Max Volume: %s (Log1p: %s)", global_max_vol, global_max_log)
 
-    for geo, group in df.groupby('geo_code'):
+    for geo, group in df.groupby("geo_code"):
         if len(group) < 12:
             # Need some history for lags
             continue
 
-        group = group.sort_values('date')
+        group = group.sort_values("date")
 
         # --- 0. Data Cleaning (Handle Data Lag) ---
         # If the last month is 0 but previous month was significant, it's likely missing data (not real 0).
         # Eurostat often publishes the column for the new month before all countries report.
         if not group.empty:
-            last_val = group['total_applications'].iloc[-1]
-            prev_val = group['total_applications'].iloc[-2] if len(group) > 1 else 0
-            
+            last_val = group["total_applications"].iloc[-1]
+            prev_val = group["total_applications"].iloc[-2] if len(group) > 1 else 0
+
             if last_val == 0 and prev_val > 100:
                 logging.info(f"Dropping last month for {geo} (Likely missing data: {prev_val} -> {last_val})")
                 group = group.iloc[:-1]
@@ -213,30 +212,30 @@ def calculate_risk_and_predict(df, engine):
         # --- 1. Calculate Risk Score ---
         # Features for Score
         # Variation calculation
-        group['prev_total'] = group['total_applications'].shift(1)
-        group['variation'] = (group['total_applications'] - group['prev_total']) / (group['prev_total'].replace(0, 1))
-        
+        group["prev_total"] = group["total_applications"].shift(1)
+        group["variation"] = (group["total_applications"] - group["prev_total"]) / (group["prev_total"].replace(0, 1))
+
         # Normalize volume (0 to 1) against GLOBAL MAX using LOG SCALE
         # This prevents the 2015 crisis (1.3M) from crushing all current scores to 0.
         # Spain (128k) -> ~0.85, DE (27k) -> ~0.72, EL (4k) -> ~0.59
-        group['vol_norm'] = np.log1p(group['total_applications']) / global_max_log
+        group["vol_norm"] = np.log1p(group["total_applications"]) / global_max_log
 
         # Formula: Multiplicative approach (Volume * Trend)
         # Base score is the normalized volume (0-100 equivalent)
         # We modulate it by the trend : * (1 + variation)
-        
-        group['risk_score'] = group['vol_norm'] * (1 + group['variation']) * 100
-        
+
+        group["risk_score"] = group["vol_norm"] * (1 + group["variation"]) * 100
+
         # Cap at 100 and floor at 0
-        group['risk_score'] = group['risk_score'].clip(lower=0, upper=100)
-        group['risk_score'] = group['risk_score'].fillna(0)
+        group["risk_score"] = group["risk_score"].clip(lower=0, upper=100)
+        group["risk_score"] = group["risk_score"].fillna(0)
 
         # --- 2. Predict ---
         # Prepare Features
-        group['lag_1'] = group['risk_score'].shift(1)
-        group['lag_2'] = group['risk_score'].shift(2)
-        group['lag_3'] = group['risk_score'].shift(3)
-        group['month'] = group['date'].dt.month
+        group["lag_1"] = group["risk_score"].shift(1)
+        group["lag_2"] = group["risk_score"].shift(2)
+        group["lag_3"] = group["risk_score"].shift(3)
+        group["month"] = group["date"].dt.month
 
         train_df = group.dropna()
         if len(train_df) < 6:
@@ -249,11 +248,11 @@ def calculate_risk_and_predict(df, engine):
 
         # Predict for M+1, M+2, M+3 from the LAST available point
         last_row = group.iloc[-1]
-        last_date = last_row['date']
-        current_score = last_row['risk_score']
+        last_date = last_row["date"]
+        current_score = last_row["risk_score"]
 
         # Lags for the first prediction: [Score(t), Score(t-1), Score(t-2)]
-        current_lags = [last_row['risk_score'], last_row['lag_1'], last_row['lag_2']]
+        current_lags = [last_row["risk_score"], last_row["lag_1"], last_row["lag_2"]]
 
         # We want to predict t+1.
         # Features for t+1: lag_1=Score(t), lag_2=Score(t-1), lag_3=Score(t-2), month=Month(t+1)
@@ -269,18 +268,20 @@ def calculate_risk_and_predict(df, engine):
                 pred = 0
             else:
                 pred = model.predict(features)[0]
-            
+
             # Cap prediction at 100 and floor at 0
             pred = max(0, min(100, pred))
 
-            predictions.append({
-                'date': last_date.date(),
-                'geo_code': geo,
-                'risk_score_calculated': float(current_score),
-                'prediction_target_month': next_date.date(),
-                'predicted_risk_score': float(pred),
-                'model_id': model_id
-            })
+            predictions.append(
+                {
+                    "date": last_date.date(),
+                    "geo_code": geo,
+                    "risk_score_calculated": float(current_score),
+                    "prediction_target_month": next_date.date(),
+                    "predicted_risk_score": float(pred),
+                    "model_id": model_id,
+                }
+            )
 
             # Shift lags
             # New lags for t+2: [Pred(t+1), Score(t), Score(t-1)]
@@ -296,7 +297,7 @@ def write_health(status: bool, message: str = ""):
         "message": message,
     }
     try:
-        with open(HEALTH_FILE, 'w', encoding='utf-8') as f:
+        with open(HEALTH_FILE, "w", encoding="utf-8") as f:
             f.write(str(payload))
     except Exception:
         logging.exception("Failed to write health status")
@@ -304,9 +305,9 @@ def write_health(status: bool, message: str = ""):
 
 def check_health():
     try:
-        with open(HEALTH_FILE, 'r', encoding='utf-8') as f:
+        with open(HEALTH_FILE, "r", encoding="utf-8") as f:
             data = f.read()
-            if 'healthy' in data:
+            if "healthy" in data:
                 return True
     except FileNotFoundError:
         logging.error("Health file not found at %s", HEALTH_FILE)
@@ -329,14 +330,14 @@ def save_predictions(df):
         with engine.begin() as conn:
             conn.execute(text("TRUNCATE TABLE risk_predictions"))
             logging.info("Cleared old predictions.")
-        
-        predictions_df = pd.DataFrame(df.to_dict(orient='records'))
+
+        predictions_df = pd.DataFrame(df.to_dict(orient="records"))
         predictions_df.to_sql(
-            'risk_predictions',
+            "risk_predictions",
             engine,
-            if_exists='append',
+            if_exists="append",
             index=False,
-            method='multi',
+            method="multi",
             chunksize=500,
         )
         logging.info("Predictions saved.")
@@ -351,16 +352,18 @@ def run_job():
     message = ""
     try:
         engine = get_db_engine()
-        
+
         # Wait for data loop
         max_wait_attempts = 60  # Wait up to 1 hour (60 * 60s)
         for attempt in range(max_wait_attempts):
             df = get_data_from_db()
             if not df.empty:
                 break
-            logging.warning(f"No data found in DB (Attempt {attempt+1}/{max_wait_attempts}). Waiting 60s for Harvester...")
+            logging.warning(
+                f"No data found in DB (Attempt {attempt + 1}/{max_wait_attempts}). Waiting 60s for Harvester..."
+            )
             time.sleep(60)
-            
+
         if df.empty:
             raise ValueError("No data found in DB after waiting. Harvester might be broken.")
 
@@ -401,5 +404,5 @@ if __name__ == "__main__":
         sys.exit(0 if healthy else 1)
 
     logging.info("Risk Predictor Service Starting...")
-    time.sleep(15) # Wait for Harvester?
+    time.sleep(15)  # Wait for Harvester?
     start_scheduler()

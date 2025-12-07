@@ -1,12 +1,15 @@
 # Fichier: api_service/models.py
-from pydantic import BaseModel
 from datetime import date
 from typing import Optional
+
+from pydantic import BaseModel
+
 
 class RiskPrediction(BaseModel):
     """
     Modèle Pydantic pour les résultats de la prédiction des risques.
     """
+
     geo_code: str
     prediction_target_month: date
     predicted_risk_score: float

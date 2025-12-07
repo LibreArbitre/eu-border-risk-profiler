@@ -8,8 +8,8 @@ from typing import Dict, Iterable, List
 
 import pandas as pd
 import requests
-from requests import HTTPError
 import schedule
+from requests import HTTPError
 from sqlalchemy import column, create_engine, table
 from sqlalchemy.dialects.postgresql import insert
 
@@ -160,9 +160,7 @@ def fetch_country_time_chunk(country: str, times: List[str]) -> List[Dict]:
             payloads.extend(fetch_country_time_chunk(country, right))
             return payloads
         if status == 400 and len(times) == 1:
-            logging.warning(
-                "Dropping period %s for %s after HTTP 400", times[0], country
-            )
+            logging.warning("Dropping period %s for %s after HTTP 400", times[0], country)
             return []
         raise
 
@@ -190,9 +188,7 @@ def fetch_eurostat_data() -> List[Dict]:
             try:
                 payloads = fetch_country_time_chunk(country, time_chunk)
             except Exception as exc:  # noqa: PERF203 logging
-                logging.warning(
-                    "Skipping chunk for %s (%s): %s", country, ",".join(time_chunk), exc
-                )
+                logging.warning("Skipping chunk for %s (%s): %s", country, ",".join(time_chunk), exc)
                 continue
 
             for payload in payloads:

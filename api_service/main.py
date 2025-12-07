@@ -1,15 +1,16 @@
+import os
+from typing import Optional
+
 from fastapi import FastAPI, HTTPException, Query
 from sqlalchemy import create_engine, text
-from typing import Optional
-import os
 
 app = FastAPI(title="EU Border Risk Profiler API")
 
-DB_USER = os.getenv('DB_USER', 'user')
-DB_PASSWORD = os.getenv('DB_PASSWORD', 'password')
-DB_NAME = os.getenv('DB_NAME', 'eubrp_db')
-DB_HOST = os.getenv('DB_HOST', 'db')
-DB_PORT = os.getenv('DB_PORT', '5432')
+DB_USER = os.getenv("DB_USER", "user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
+DB_NAME = os.getenv("DB_NAME", "eubrp_db")
+DB_HOST = os.getenv("DB_HOST", "db")
+DB_PORT = os.getenv("DB_PORT", "5432")
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 engine = create_engine(DATABASE_URL)
@@ -24,6 +25,7 @@ def healthcheck():
         return {"status": "ok"}
     except Exception as exc:  # pragma: no cover - used for runtime checks
         raise HTTPException(status_code=503, detail=str(exc))
+
 
 @app.get("/api/v1/risk/current")
 @app.get("/api/v1/risk/latest")
@@ -120,6 +122,7 @@ def get_current_risk(
     except Exception as exc:  # pragma: no cover - runtime behavior
         raise HTTPException(status_code=500, detail=str(exc))
 
+
 @app.get("/api/v1/risk/predict")
 def get_predictions():
     """Returns predictions for M+1..M+3."""
@@ -139,17 +142,19 @@ def get_predictions():
             result = conn.execute(text(query))
             return [
                 {
-                    "geo_code": r.geo_code, 
-                    "risk_score_calculated": float(r.risk_score_calculated), 
+                    "geo_code": r.geo_code,
+                    "risk_score_calculated": float(r.risk_score_calculated),
                     "predicted_risk_score": float(r.predicted_risk_score),
                     "date": r.date,
                     "prediction_target_month": r.prediction_target_month,
-                    "type": "predicted"
-                } for r in result
+                    "type": "predicted",
+                }
+                for r in result
             ]
     except Exception as e:
         print(e)
         return []
+
 
 @app.get("/api/v1/data/history/{geo_code}")
 def get_history(geo_code: str):
