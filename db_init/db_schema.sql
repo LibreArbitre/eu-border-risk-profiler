@@ -36,8 +36,10 @@ CREATE TABLE IF NOT EXISTS risk_predictions (
     prediction_target_month DATE NOT NULL,       -- Mois prédit (M+1, M+2, M+3)
     predicted_risk_score NUMERIC(5, 2),
     model_id INTEGER REFERENCES model_registry(id), -- Identifiant du modèle utilisé
-    prediction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    prediction_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    run_id VARCHAR(64) NOT NULL
 );
 
 -- Index pour optimiser la recherche par pays et par date de prédiction
-CREATE UNIQUE INDEX idx_unique_prediction ON risk_predictions (geo_code, prediction_target_month);
+CREATE UNIQUE INDEX idx_unique_prediction ON risk_predictions (run_id, geo_code, prediction_target_month);
+CREATE INDEX idx_predictions_snapshot_date ON risk_predictions (prediction_date);
