@@ -17,7 +17,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -47,9 +47,9 @@ services:
       HARVESTER_MONTHS: ${HARVESTER_MONTHS:-60}
       HARVESTER_TIME_CHUNK: ${HARVESTER_TIME_CHUNK:-12}
     # Command: exécute le script (peut être remplacé par un scheduler en production)
-    command: python /app/harvester.py
+    command: python /app/harvester_tsv.py
     healthcheck:
-      test: ["CMD-SHELL", "python /app/harvester.py --healthcheck"]
+      test: [ "CMD-SHELL", "python /app/harvester_tsv.py --healthcheck" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -78,7 +78,7 @@ services:
       PREDICTOR_HEALTH_FILE: ${PREDICTOR_HEALTH_FILE:-/tmp/predictor_health}
     command: python /app/risk_predictor.py
     healthcheck:
-      test: ["CMD-SHELL", "python /app/risk_predictor.py --healthcheck"]
+      test: [ "CMD-SHELL", "python /app/risk_predictor.py --healthcheck" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -103,8 +103,7 @@ services:
       - "8000:8000"
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     healthcheck:
-      test:
-        ["CMD-SHELL", "python -c \"import os, sys, requests; url=os.getenv('API_HEALTH_URL','http://localhost:8000/health');\\ntry:\\n resp=requests.get(url, timeout=2);\\n sys.exit(0 if resp.status_code==200 else 1)\\nexcept Exception as exc:\\n print(exc); sys.exit(1)\" "]
+      test: [ "CMD-SHELL", "python -c \"import os, sys, requests; url=os.getenv('API_HEALTH_URL','http://localhost:8000/health');\\ntry:\\n resp=requests.get(url, timeout=2);\\n sys.exit(0 if resp.status_code==200 else 1)\\nexcept Exception as exc:\\n print(exc); sys.exit(1)\" " ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -127,8 +126,7 @@ services:
       - "8501:8501"
     command: streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0 --server.enableCORS false
     healthcheck:
-      test:
-        ["CMD-SHELL", "python -c \"import sys, requests;\\nurl='http://localhost:8501/_stcore/health';\\ntry:\\n resp=requests.get(url, timeout=2);\\n sys.exit(0 if resp.status_code==200 else 1)\\nexcept Exception as exc:\\n print(exc); sys.exit(1)\" "]
+      test: [ "CMD-SHELL", "python -c \"import sys, requests;\\nurl='http://localhost:8501/_stcore/health';\\ntry:\\n resp=requests.get(url, timeout=2);\\n sys.exit(0 if resp.status_code==200 else 1)\\nexcept Exception as exc:\\n print(exc); sys.exit(1)\" " ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -140,7 +138,7 @@ services:
 volumes:
   db_data:
 
-# Réseau interne pour la communication des services
+    # Réseau interne pour la communication des services
 networks:
   eubrp_net:
     driver: bridge

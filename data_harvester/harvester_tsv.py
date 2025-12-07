@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
 from io import StringIO
+import csv
 
 # Configuration logging
 logging.basicConfig(
@@ -34,90 +35,133 @@ def download_eurostat_tsv():
     logging.info("Downloading Eurostat TSV bulk file...")
     
     # URL du bulk download Eurostat
-    url = "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/migr_asyappctzm/?format=TSV&compressed=true"
+    url = "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/migr_asyappctzm/?format=TSV&compressed=false"
     
+    # Download with stream to avoid memory issues and show progress
+    local_filename = "/tmp/eurostat_data.tsv"
     try:
-        response = requests.get(url, timeout=60)
-        response.raise_for_status()
+        with requests.get(url, stream=True, timeout=120) as r:
+            r.raise_for_status()
+            total_size = int(r.headers.get('content-length', 0))
+            downloaded = 0
+            with open(local_filename, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192): 
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if downloaded % (10 * 1024 * 1024) < 8192: # Log every ~10MB
+                        logging.info(f"Downloaded {downloaded / (1024*1024):.1f} MB...")
         
-        # Le fichier est compressé, requests le décompresse automatiquement
-        content = response.text
+        logging.info(f"Download complete. Total size: {downloaded / (1024*1024):.1f} MB")
         
-        logging.info(f"Downloaded {len(content)} bytes")
-        return content
-    
+        # Read file content for parsing
+        with open(local_filename, 'r', encoding='utf-8') as f:
+            tsv_content = f.read()
+            
+        return tsv_content
+            
     except Exception as e:
-        logging.error(f"Failed to download TSV: {e}")
+        logging.error(f"Download failed: {e}")
         raise
 
-def parse_tsv_to_dataframe(tsv_content):
+def process_and_save_chunked(tsv_content, chunk_size=100000):
     """
-    Parse le TSV Eurostat en DataFrame Pandas
-    Format Eurostat: première colonne = dimensions, autres colonnes = périodes
+    Parse le TSV Eurostat en chunks et sauvegarde au fur et à mesure
     """
-    logging.info("Parsing TSV content...")
+    logging.info("Starting chunked processing...")
     
-    # Lire le TSV avec Pandas
-    df = pd.read_csv(StringIO(tsv_content), sep='\t')
-    
-    logging.info(f"TSV loaded: {df.shape[0]} rows, {df.shape[1]} columns")
-    logging.info(f"Columns: {df.columns.tolist()[:5]}...")  # First 5
-    
-    # La première colonne contient toutes les dimensions concaténées
-    # Format: freq,unit,citizen,sex,asyl_app,age,geo\TIME_PERIOD
-    dimension_col = df.columns[0]
-    
-    # Séparer les dimensions
-    dimensions = df[dimension_col].str.split(',', expand=True)
-    dimensions.columns = ['freq', 'unit', 'citizen', 'sex', 'applicant', 'age', 'geo']
-    
-    # Joindre avec les valeurs temporelles
-    time_cols = [col for col in df.columns if col != dimension_col]
-    
-    # Restructurer en format long
-    records = []
-    total_periods = len(time_cols)
-    
-    logging.info(f"Processing {len(df)} dimension combinations × {total_periods} time periods...")
-    
-    for idx, row in df.iterrows():
-        dims = dimensions.iloc[idx]
+    # Use C engine for speed, disable quoting to handle backslashes in header
+    # Read in chunks
+    try:
+        # First read header to get columns
+        header_df = pd.read_csv(
+            StringIO(tsv_content), 
+            sep='\t', 
+            engine='c', 
+            quoting=csv.QUOTE_NONE,
+            on_bad_lines='warn',
+            nrows=0
+        )
+        header_df.columns = header_df.columns.str.strip()
+        columns = header_df.columns.tolist()
         
-        for time_col in time_cols:
-            value = row[time_col]
+        # Define iterator
+        chunk_iter = pd.read_csv(
+            StringIO(tsv_content), 
+            sep='\t', 
+            engine='c', 
+            quoting=csv.QUOTE_NONE,
+            on_bad_lines='warn',
+            chunksize=chunk_size,
+            names=columns,
+            header=0
+        )
+        
+        total_rows = 0
+        
+        for i, df in enumerate(chunk_iter):
+            logging.info(f"Processing chunk {i+1} ({len(df)} rows)...")
             
-            # Ignorer les valeurs manquantes (: dans Eurostat)
-            if pd.isna(value) or value == ':' or value == ': ':
-                continue
+            # Clean columns
+            df.columns = df.columns.str.strip()
             
-            try:
-                value = float(value.strip())
-            except:
-                continue
+            # La première colonne contient toutes les dimensions concaténées
+            dimension_col = df.columns[0]
             
-            # Parser le format de temps (ex: 2023M11)
-            if 'M' in time_col:
-                year, month = time_col.split('M')
-                date_str = f"{year}-{month.zfill(2)}-01"
+            # Séparer les dimensions
+            dimensions = df[dimension_col].str.split(',', expand=True)
+            if dimensions.shape[1] == 7:
+                dimensions.columns = ['freq', 'unit', 'citizen', 'sex', 'applicant', 'age', 'geo']
             else:
+                logging.warning(f"Chunk {i+1}: Unexpected dimensions {dimensions.shape[1]}, skipping chunk")
                 continue
+
+            # Assign dimensions back
+            df = pd.concat([dimensions, df.drop(columns=[dimension_col])], axis=1)
             
-            records.append({
-                'date': date_str,
-                'geo_code': dims['geo'],
-                'citizen_code': dims['citizen'],
-                'applicant_type': dims['applicant'],
-                'total_applications': int(value)
+            # Melt
+            id_vars = ['freq', 'unit', 'citizen', 'sex', 'applicant', 'age', 'geo']
+            id_vars = [c for c in id_vars if c in df.columns]
+            
+            df_long = df.melt(id_vars=id_vars, var_name='date_raw', value_name='value_raw')
+            
+            # Filter missing
+            df_long = df_long[~df_long['value_raw'].isin([':', ': ', 'nan', ''])]
+            df_long = df_long.dropna(subset=['value_raw'])
+            
+            # Clean values
+            df_long['value_clean'] = df_long['value_raw'].astype(str).str.replace(r'[a-zA-Z\s]', '', regex=True)
+            df_long = df_long[df_long['value_clean'] != '']
+            df_long['total_applications'] = pd.to_numeric(df_long['value_clean'], errors='coerce').fillna(0).astype(int)
+            
+            # Parse dates
+            df_long = df_long[df_long['date_raw'].str.contains('M')]
+            df_long['year'] = df_long['date_raw'].str.split('M').str[0]
+            df_long['month'] = df_long['date_raw'].str.split('M').str[1]
+            df_long['date'] = pd.to_datetime(df_long['year'] + '-' + df_long['month'] + '-01', errors='coerce')
+            df_long = df_long.dropna(subset=['date'])
+            
+            # Rename
+            df_final = df_long.rename(columns={
+                'geo': 'geo_code',
+                'citizen': 'citizen_code',
+                'applicant': 'applicant_type'
             })
-        
-        # Log progress every 1000 rows
-        if (idx + 1) % 1000 == 0:
-            logging.info(f"Processed {idx + 1}/{len(df)} dimension combinations...")
-    
-    result_df = pd.DataFrame(records)
-    logging.info(f"Created DataFrame with {len(result_df)} records")
-    
-    return result_df
+            
+            # Filter data (FRST, TOTAL, EU)
+            df_final = filter_data(df_final)
+            
+            # Select final columns
+            final_cols = ['date', 'geo_code', 'citizen_code', 'applicant_type', 'total_applications']
+            if not df_final.empty:
+                df_final = df_final[final_cols]
+                save_to_db(df_final)
+                total_rows += len(df_final)
+            
+        logging.info(f"Total records saved: {total_rows}")
+            
+    except Exception as e:
+        logging.error(f"Chunk processing failed: {e}")
+        raise
 
 def filter_data(df):
     """
@@ -169,7 +213,7 @@ def save_to_db(df):
     df.to_sql(
         'asylum_data',
         engine,
-        if_exists='replace',  # Remplace les anciennes données
+        if_exists='append',  # Append pour le chunking
         index=False,
         method='multi',
         chunksize=1000
@@ -189,14 +233,15 @@ def run_harvest():
         # 1. Télécharger le TSV
         tsv_content = download_eurostat_tsv()
         
-        # 2. Parser en DataFrame
-        df = parse_tsv_to_dataframe(tsv_content)
+        # 1.5 Truncate table (mimic replace)
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            conn.execute(text("TRUNCATE TABLE asylum_data"))
+            conn.commit()
+            logging.info("Table asylum_data truncated.")
         
-        # 3. Filtrer
-        df = filter_data(df)
-        
-        # 4. Sauvegarder
-        save_to_db(df)
+        # 2. Parser et Sauvegarder en chunks
+        process_and_save_chunked(tsv_content)
         
         logging.info("=" * 60)
         logging.info("✅ HARVEST COMPLETED SUCCESSFULLY")

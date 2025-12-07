@@ -317,9 +317,19 @@ def run_job():
     message = ""
     try:
         engine = get_db_engine()
-        df = get_data_from_db()
+        
+        # Wait for data loop
+        max_wait_attempts = 60  # Wait up to 1 hour (60 * 60s)
+        for attempt in range(max_wait_attempts):
+            df = get_data_from_db()
+            if not df.empty:
+                break
+            logging.warning(f"No data found in DB (Attempt {attempt+1}/{max_wait_attempts}). Waiting 60s for Harvester...")
+            time.sleep(60)
+            
         if df.empty:
-            raise ValueError("No data found in DB.")
+            raise ValueError("No data found in DB after waiting. Harvester might be broken.")
+
         preds = calculate_risk_and_predict(df, engine)
         save_predictions(preds)
     except Exception as exc:  # noqa: PERF203 logging
