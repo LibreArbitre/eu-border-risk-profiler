@@ -1,0 +1,10 @@
+[client]
+showErrorDetails = false
+
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+
+[ui]
+hideTopBar = true

@@ -185,7 +185,12 @@ def calculate_risk_and_predict(df, engine):
     # Ensure date is datetime
     df['date'] = pd.to_datetime(df['date'])
 
-    logging.info("Processing %s countries...", len(df['geo_code'].unique()))
+    # Calculate Global Max Volume for normalization (User Request: Global consistency)
+    global_max_vol = df['total_applications'].max()
+    if global_max_vol == 0: global_max_vol = 1
+    # Logarithmic Scale for Global Max (to handle 2015 crisis outlier)
+    global_max_log = np.log1p(global_max_vol)
+    logging.info("Global Max Volume: %s (Log1p: %s)", global_max_vol, global_max_log)
 
     for geo, group in df.groupby('geo_code'):
         if len(group) < 12:
@@ -194,27 +199,36 @@ def calculate_risk_and_predict(df, engine):
 
         group = group.sort_values('date')
 
+        # --- 0. Data Cleaning (Handle Data Lag) ---
+        # If the last month is 0 but previous month was significant, it's likely missing data (not real 0).
+        # Eurostat often publishes the column for the new month before all countries report.
+        if not group.empty:
+            last_val = group['total_applications'].iloc[-1]
+            prev_val = group['total_applications'].iloc[-2] if len(group) > 1 else 0
+            
+            if last_val == 0 and prev_val > 100:
+                logging.info(f"Dropping last month for {geo} (Likely missing data: {prev_val} -> {last_val})")
+                group = group.iloc[:-1]
+
         # --- 1. Calculate Risk Score ---
         # Features for Score
+        # Variation calculation
         group['prev_total'] = group['total_applications'].shift(1)
-        group['variation'] = (group['total_applications'] - group['prev_total']) / (group['prev_total'] + 1) # +1 to avoid div by 0
+        group['variation'] = (group['total_applications'] - group['prev_total']) / (group['prev_total'].replace(0, 1))
+        
+        # Normalize volume (0 to 1) against GLOBAL MAX using LOG SCALE
+        # This prevents the 2015 crisis (1.3M) from crushing all current scores to 0.
+        # Spain (128k) -> ~0.85, DE (27k) -> ~0.72, EL (4k) -> ~0.59
+        group['vol_norm'] = np.log1p(group['total_applications']) / global_max_log
 
-        max_vol = group['total_applications'].max()
-        if max_vol == 0: max_vol = 1
-        group['vol_norm'] = group['total_applications'] / max_vol
-
-        # Formula: 40% Volume + 60% Variation (Positive)
-        # We assume Variation > 0 increases risk. Variation < 0 decreases it (but we clip at 0 for the formula? or let it reduce score?)
-        # Let's use simple weighted sum, but normalize variation to something 0-1ish?
-        # Variation can be > 1 (e.g. 200%).
-        # Let's cap variation impact.
-        # Score = (0.4 * vol_norm + 0.6 * tanh(variation)) * 100?
-        # Let's stick to simple: Score = (0.4 * vol_norm + 0.6 * variation) * 100
-        # But variation can be negative.
-        # Risk score usually 0-100.
-        # Let's clip variation at 0.
-
-        group['risk_score'] = (0.4 * group['vol_norm'] + 0.6 * group['variation'].clip(lower=0)) * 100
+        # Formula: Multiplicative approach (Volume * Trend)
+        # Base score is the normalized volume (0-100 equivalent)
+        # We modulate it by the trend : * (1 + variation)
+        
+        group['risk_score'] = group['vol_norm'] * (1 + group['variation']) * 100
+        
+        # Cap at 100 and floor at 0
+        group['risk_score'] = group['risk_score'].clip(lower=0, upper=100)
         group['risk_score'] = group['risk_score'].fillna(0)
 
         # --- 2. Predict ---
@@ -228,7 +242,10 @@ def calculate_risk_and_predict(df, engine):
         if len(train_df) < 6:
             continue
 
-        model, model_id = get_or_train_model(engine, geo, train_df)
+        # Force Retraining (User Request: Always retrain on new data)
+        # logic: we always train a new model instead of loading from DB
+        model = train_model(train_df)
+        model_id = persist_model(engine, geo, model)
 
         # Predict for M+1, M+2, M+3 from the LAST available point
         last_row = group.iloc[-1]
@@ -247,11 +264,14 @@ def calculate_risk_and_predict(df, engine):
 
             # Predict
             features = np.array([current_lags[0], current_lags[1], current_lags[2], next_month]).reshape(1, -1)
-            # Handle NaN in features? (Should not happen if last_row is valid)
+            # Handle NaN in features?
             if np.isnan(features).any():
                 pred = 0
             else:
                 pred = model.predict(features)[0]
+            
+            # Cap prediction at 100 and floor at 0
+            pred = max(0, min(100, pred))
 
             predictions.append({
                 'date': last_date.date(),

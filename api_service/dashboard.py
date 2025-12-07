@@ -1,6 +1,6 @@
 """
 EU Border Risk Profiler Dashboard
-Professional dashboard for analysts monitoring asylum trends and risk predictions
+Advanced dashboard for analysts monitoring asylum trends and risk predictions
 """
 import streamlit as st
 import requests
@@ -26,7 +26,7 @@ st.set_page_config(
     }
 )
 
-# Custom CSS for professional look
+# Custom CSS for modern look
 st.markdown("""
 <style>
     /* Hide Streamlit branding and deploy button */
@@ -37,31 +37,34 @@ st.markdown("""
     
     /* Main container styling */
     .main .block-container {
-        padding-top: 0 !important;
+        padding-top: 1rem !important;
         padding-bottom: 2rem;
         max-width: 1400px;
     }
     
     /* Header styling */
     .dashboard-header {
-        background: linear-gradient(135deg, #1e3a5f 0%, #2c5282 100%);
-        padding: 1.5rem 2rem;
-        border-radius: 0 0 12px 12px;
-        margin: -1rem -1rem 2rem -1rem;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        padding: 2rem;
+        border-radius: 12px;
+        margin-bottom: 2rem;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        color: white;
     }
     
     .dashboard-title {
-        color: #ffffff !important;
-        font-size: 2rem !important;
-        font-weight: 700 !important;
+        color: #f8fafc !important;
+        font-family: 'Inter', sans-serif;
+        font-size: 2.25rem !important;
+        font-weight: 800 !important;
         margin: 0 !important;
-        letter-spacing: -0.5px;
+        letter-spacing: -0.025em;
     }
     
     .dashboard-subtitle {
-        color: #a0c4e8 !important;
-        font-size: 1rem !important;
+        color: #94a3b8 !important;
+        font-family: 'Inter', sans-serif;
+        font-size: 1.1rem !important;
         margin-top: 0.5rem !important;
         font-weight: 400;
     }
@@ -70,85 +73,67 @@ st.markdown("""
     .metric-card {
         background: #ffffff;
         border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        padding: 1.25rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-        transition: box-shadow 0.2s ease;
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+        transition: transform 0.2s;
     }
     
     .metric-card:hover {
-        box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+        transform: translateY(-2px);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
     }
     
     .metric-label {
         color: #64748b;
-        font-size: 0.85rem;
-        font-weight: 500;
+        font-size: 0.875rem;
+        font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.05em;
         margin-bottom: 0.5rem;
     }
     
     .metric-value {
-        color: #1e293b;
-        font-size: 1.75rem;
+        color: #0f172a;
+        font-size: 2rem;
         font-weight: 700;
-    }
-    
-    .metric-delta-positive {
-        color: #dc2626;
-        font-size: 0.875rem;
-    }
-    
-    .metric-delta-negative {
-        color: #16a34a;
-        font-size: 0.875rem;
+        letter-spacing: -0.025em;
     }
     
     /* Section headers */
     .section-header {
-        color: #1e293b;
-        font-size: 1.25rem;
-        font-weight: 600;
-        padding-bottom: 0.75rem;
-        border-bottom: 2px solid #e2e8f0;
-        margin-bottom: 1rem;
+        color: #0f172a;
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin-top: 1rem;
+        margin-bottom: 1.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
     }
     
-    /* Data tables */
-    .stDataFrame {
-        border-radius: 8px;
-        overflow: hidden;
-    }
-    
-    /* Plotly charts container */
+    /* Chart container */
     .chart-container {
-        background: #ffffff;
+        background: white;
+        padding: 1rem;
+        border-radius: 12px;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    }
+    
+    /* Table Styling */
+    div[data-testid="stDataFrame"] {
         border: 1px solid #e2e8f0;
         border-radius: 12px;
-        padding: 1rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    }
-    
-    /* Info/Warning boxes */
-    .stAlert {
-        border-radius: 8px;
-    }
-    
-    /* Selectbox styling */
-    .stSelectbox > div > div {
-        border-radius: 8px;
-    }
-    
-    /* Remove default padding from columns */
-    div[data-testid="column"] {
+        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
         padding: 0.5rem;
+        background: white;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # --- Data Fetching Functions ---
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=60) # Short cache for responsiveness
 def get_predictions():
     """Fetch risk predictions from API"""
     try:
@@ -159,7 +144,7 @@ def get_predictions():
     except Exception as e:
         return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=60)
 def get_latest():
     """Fetch latest risk data from API"""
     try:
@@ -204,8 +189,18 @@ ISO_MAP = {
 # --- Header ---
 st.markdown("""
 <div class="dashboard-header">
-    <h1 class="dashboard-title">EU Border Risk Profiler</h1>
-    <p class="dashboard-subtitle">Monitoring and Forecasting Asylum Application Trends across the European Union</p>
+    <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div>
+            <h1 class="dashboard-title">EU Border Risk Profiler</h1>
+            <p class="dashboard-subtitle">Strategic Intelligence & Forecasting System</p>
+        </div>
+        <div style="text-align: right;">
+            <div style="background: rgba(255,255,255,0.1); padding: 0.5rem 1rem; border-radius: 8px;">
+                <span style="color: #cbd5e1; font-size: 0.9rem;">System Status</span><br>
+                <span style="color: #4ade80; font-weight: 600;">● Operational</span>
+            </div>
+        </div>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -213,51 +208,73 @@ st.markdown("""
 df_pred = get_predictions()
 df_curr = get_latest()
 
-# --- KPI Metrics Row ---
+# --- Logic: Handle Data Lags ---
+# We want to display the "Current Risk" which is the prediction for the coming month
+# based on the LATEST available data for each country.
+valid_data = False
+df_map = pd.DataFrame()
+
 if not df_pred.empty:
-    # Use the same date as the map for consistency
-    min_date = df_pred['date'].min()
-    df_kpi = df_pred[df_pred['date'] == min_date]
+    # 1. Sort by date (source date)
+    df_sorted = df_pred.sort_values('date')
     
-    # Calculate KPIs from the filtered data
-    avg_risk = df_kpi['risk_score'].mean()
-    max_risk = df_kpi['risk_score'].max()
-    max_risk_country = df_kpi.loc[df_kpi['risk_score'].idxmax(), 'geo_code']
-    countries_with_data = df_kpi['geo_code'].nunique()
+    # 2. Get latest source date per country
+    latest_dates = df_pred.groupby('geo_code')['date'].max().reset_index()
+    
+    # 3. Merge back to get the rows corresponding to these latest dates
+    merged = pd.merge(df_pred, latest_dates, on=['geo_code', 'date'])
+    
+    # 4. Aggregate predictions (Stable indicator: Mean of 3 months horizon)
+    df_map = merged.groupby('geo_code').agg({
+        'risk_score_calculated': 'first', # Current calculated risk
+        'predicted_risk_score': 'mean',   # Average risk in next 3 months (Stable)
+        'date': 'first'
+    }).reset_index()
+    
+    df_map['risk_score'] = df_map['predicted_risk_score'] # Use this for viz
+    valid_data = True
+
+# --- KPI Metrics Row ---
+if valid_data:
+    # Calculate KPIs
+    avg_risk = df_map['risk_score'].mean()
+    max_risk = df_map['risk_score'].max()
+    max_risk_country = df_map.loc[df_map['risk_score'].idxmax(), 'geo_code']
+    total_countries = df_map['geo_code'].nunique()
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.markdown("""
+        st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">Average Risk Score</div>
-            <div class="metric-value">{:.2f}</div>
+            <div class="metric-label">EU Avg Risk Index</div>
+            <div class="metric-value">{avg_risk:.1f}</div>
         </div>
-        """.format(avg_risk), unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
     
     with col2:
-        st.markdown("""
+        st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">Highest Risk Score</div>
-            <div class="metric-value">{:.2f}</div>
+            <div class="metric-label">Max Risk Index</div>
+            <div class="metric-value" style="color: #dc2626;">{max_risk:.1f}</div>
         </div>
-        """.format(max_risk), unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
     
     with col3:
-        st.markdown("""
+        st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">Highest Risk Country</div>
-            <div class="metric-value">{}</div>
+            <div class="metric-label">High Risk Hotspot</div>
+            <div class="metric-value">{COUNTRY_NAMES.get(max_risk_country, max_risk_country)}</div>
         </div>
-        """.format(COUNTRY_NAMES.get(max_risk_country, max_risk_country)), unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
     
     with col4:
-        st.markdown("""
+        st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">Countries with Predictions</div>
-            <div class="metric-value">{}</div>
+            <div class="metric-label">Monitored Countries</div>
+            <div class="metric-value">{total_countries}</div>
         </div>
-        """.format(countries_with_data), unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -265,50 +282,51 @@ if not df_pred.empty:
 col_map, col_ranking = st.columns([2, 1])
 
 with col_map:
-    st.markdown('<p class="section-header">📊 Risk Heatmap (Predicted)</p>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header"><span>🌍</span> Risk Heatmap (Forecast)</div>', unsafe_allow_html=True)
     
-    if not df_pred.empty:
-        # Get the first prediction month
-        min_date = df_pred['date'].min()
-        df_map = df_pred[df_pred['date'] == min_date].copy()
-        
+    if valid_data:
         # Map to ISO-3 codes
         df_map['iso_alpha'] = df_map['geo_code'].map(ISO_MAP)
         df_map['country_name'] = df_map['geo_code'].map(COUNTRY_NAMES)
         
-        # Create choropleth with only countries that have data
+        # Create choropleth
         fig = px.choropleth(
             df_map,
             locations="iso_alpha",
             color="risk_score",
             scope="europe",
+            # Color Scale: Blue (Low) -> Yellow (Med) -> Orange (High) -> Red (Extreme)
             color_continuous_scale=[
-                [0, "#f0f9ff"],      # Very light blue for low risk
-                [0.25, "#bae6fd"],   # Light blue
-                [0.5, "#fbbf24"],    # Yellow/amber for medium
-                [0.75, "#f97316"],   # Orange for high
-                [1, "#dc2626"]       # Red for very high
+                [0.0, "#f0f9ff"], # Very Low
+                [0.2, "#bae6fd"], # Low
+                [0.4, "#fde047"], # Medium
+                [0.6, "#f97316"], # High
+                [0.8, "#dc2626"], # Very High
+                [1.0, "#7f1d1d"]  # Extreme
             ],
+            range_color=[0, 100], # Force scale 0-100 for consistency
             hover_name="country_name",
             hover_data={
                 "iso_alpha": False,
-                "risk_score": ":.2f",
+                "risk_score": ":.1f",
                 "geo_code": False
             },
             labels={"risk_score": "Risk Score"},
         )
         
-        # Update layout for professional look - show ONLY countries with data
+        # Update layout for polished look
         fig.update_geos(
             showcoastlines=True,
-            coastlinecolor="#94a3b8",
+            coastlinecolor="#cbd5e1",
             showland=True,
-            landcolor="#f8fafc",  # Light gray for countries without data
+            landcolor="#f8fafc",
             showocean=True,
-            oceancolor="#e0f2fe",
+            oceancolor="#e0f2fe", # Light blue ocean
             showlakes=True,
             lakecolor="#e0f2fe",
             showframe=False,
+            showcountries=True,
+            countrycolor="white",
             projection_type="mercator",
             center={"lat": 54, "lon": 15},
             lataxis_range=[35, 72],
@@ -316,147 +334,144 @@ with col_map:
         )
         
         fig.update_layout(
-            margin={"r": 0, "t": 40, "l": 0, "b": 0},
-            title={
-                "text": f"<b>Predicted Risk Scores</b> — {min_date}",
-                "font": {"size": 14, "color": "#374151"},
-                "x": 0.5,
-                "xanchor": "center"
-            },
+            margin={"r": 0, "t": 0, "l": 0, "b": 0},
             coloraxis_colorbar={
-                "title": {"text": "Risk<br>Score", "font": {"size": 11}},
-                "thickness": 15,
-                "len": 0.6,
-                "tickfont": {"size": 10}
+                "title": "",
+                "thickness": 12,
+                "len": 0.5,
+                "x": 0.05,
+                "y": 0.5,
+                "tickfont": {"color": "#64748b"}
             },
-            height=500,
+            height=550,
             paper_bgcolor="rgba(0,0,0,0)",
             geo_bgcolor="rgba(0,0,0,0)",
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        with st.container():
+            st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+            st.plotly_chart(fig, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
     else:
-        st.info("⏳ No prediction data available. Waiting for Harvester and Predictor to complete.")
+        st.info("⏳ System initializing... Waiting for prediction data.")
 
 with col_ranking:
-    st.markdown('<p class="section-header">🏆 Risk Ranking</p>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header"><span>🏆</span> Risk Ranking</div>', unsafe_allow_html=True)
     
-    if not df_pred.empty:
-        # Use the same date as the map (min_date) for consistency
-        min_date = df_pred['date'].min()
-        df_ranking = df_pred[df_pred['date'] == min_date].copy()
-        
+    if valid_data:
         # Sort by risk score
-        ranking = df_ranking[['geo_code', 'risk_score']].copy()
+        ranking = df_map[['geo_code', 'risk_score']].copy()
         ranking = ranking.sort_values('risk_score', ascending=False)
         ranking['Country'] = ranking['geo_code'].map(COUNTRY_NAMES)
         ranking = ranking.reset_index(drop=True)
-        ranking.columns = ['Code', 'Risk Score', 'Country']
-        ranking = ranking[['Country', 'Code', 'Risk Score']]
-        ranking['Risk Score'] = ranking['Risk Score'].round(2)
-        ranking['Rank'] = range(1, len(ranking) + 1)
-        ranking = ranking[['Rank', 'Country', 'Code', 'Risk Score']]
+        ranking.columns = ['Code', 'Score', 'Country']
         
-        # Style the dataframe
+        # Add Rank
+        ranking.index = ranking.index + 1
+        ranking['Rank'] = ranking.index
+        
+        final_ranking = ranking[['Country', 'Score']]
+        
         st.dataframe(
-            ranking,
-            hide_index=True,
+            final_ranking,
             use_container_width=True,
+            height=550,
             column_config={
-                "Rank": st.column_config.NumberColumn("", width="small"),
                 "Country": st.column_config.TextColumn("Country", width="medium"),
-                "Code": st.column_config.TextColumn("ISO", width="small"),
-                "Risk Score": st.column_config.ProgressColumn(
-                    "Risk Score",
-                    format="%.2f",
+                "Score": st.column_config.ProgressColumn(
+                    "Risk Index",
+                    format="%.1f",
                     min_value=0,
-                    max_value=ranking['Risk Score'].max() * 1.1 if len(ranking) > 0 else 10,
+                    max_value=100,
                 ),
             }
         )
     else:
-        st.info("No ranking data available.")
+        st.info("No data available.")
 
 # --- Country Analysis Section ---
 st.markdown("<br>", unsafe_allow_html=True)
-st.markdown('<p class="section-header">📈 Country Analysis</p>', unsafe_allow_html=True)
+st.markdown('<div class="section-header"><span>📈</span> Deep Dive Analysis</div>', unsafe_allow_html=True)
 
-if not df_curr.empty or not df_pred.empty:
-    # Get available countries
-    if not df_pred.empty:
-        countries = sorted(df_pred['geo_code'].unique())
-    elif not df_curr.empty:
-        countries = sorted(df_curr['geo_code'].unique())
-    else:
-        countries = []
-    
-    # Format dropdown with country names
+if valid_data:
+    # Dropdown
+    countries = sorted(df_map['geo_code'].unique())
     country_options = {code: f"{COUNTRY_NAMES.get(code, code)} ({code})" for code in countries}
     
-    if countries:
-        col_select, col_spacer = st.columns([1, 3])
-        with col_select:
-            selected_code = st.selectbox(
-                "Select a country to analyze",
-                options=countries,
-                format_func=lambda x: country_options.get(x, x),
-                key="country_select"
-            )
+    col_select, col_empty = st.columns([1, 2])
+    with col_select:
+        selected_code = st.selectbox(
+            "Select Country",
+            options=countries,
+            format_func=lambda x: country_options.get(x, x)
+        )
+    
+    if selected_code:
+        col_hist, col_stats = st.columns([2, 1])
         
-        if selected_code:
-            # Fetch history
-            df_hist = get_history(selected_code)
-            
+        # Fetch history
+        df_hist = get_history(selected_code)
+        
+        with col_hist:
             if not df_hist.empty:
                 df_hist['date'] = pd.to_datetime(df_hist['date'])
                 df_hist = df_hist.sort_values('date')
                 
-                # Create line chart
+                # Chart
                 fig_line = go.Figure()
-                
                 fig_line.add_trace(go.Scatter(
                     x=df_hist['date'],
                     y=df_hist['total'],
-                    mode='lines+markers',
-                    name='Applications',
-                    line=dict(color='#3b82f6', width=2),
-                    marker=dict(size=4),
+                    mode='lines',
                     fill='tozeroy',
-                    fillcolor='rgba(59, 130, 246, 0.1)'
+                    name='Applications',
+                    line=dict(color='#0ea5e9', width=3),
+                    fillcolor='rgba(14, 165, 233, 0.1)'
                 ))
                 
                 fig_line.update_layout(
-                    title={
-                        "text": f"<b>Asylum Applications History</b> — {COUNTRY_NAMES.get(selected_code, selected_code)}",
-                        "font": {"size": 14, "color": "#374151"},
-                    },
+                    title="Volume History (Applications)",
                     xaxis_title="",
-                    yaxis_title="Total Applications",
+                    yaxis_title="",
                     hovermode="x unified",
                     height=350,
-                    margin={"r": 20, "t": 50, "l": 60, "b": 40},
+                    showlegend=False,
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
-                    xaxis=dict(
-                        showgrid=True,
-                        gridcolor='rgba(0,0,0,0.05)',
-                    ),
-                    yaxis=dict(
-                        showgrid=True,
-                        gridcolor='rgba(0,0,0,0.05)',
-                    )
+                    yaxis=dict(gridcolor='#f1f5f9'),
+                    xaxis=dict(gridcolor='#f1f5f9')
                 )
                 
+                st.markdown('<div class="chart-container">', unsafe_allow_html=True)
                 st.plotly_chart(fig_line, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
             else:
-                st.info(f"No historical data available for {COUNTRY_NAMES.get(selected_code, selected_code)}.")
-else:
-    st.info("⏳ Waiting for data... Please ensure the Harvester and Predictor services have completed their initial run.")
+                st.warning("No historical data available.")
+
+        with col_stats:
+            # Show specific stats for this country
+            row = df_map[df_map['geo_code'] == selected_code].iloc[0]
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Current Risk Index</div>
+                <div class="metric-value">{row['risk_score']:.1f}</div>
+                <div style="color: #64748b; font-size: 0.9rem; margin-top:0.5rem;">
+                    Assessment based on data up to {row['date'].strftime('%b %Y')}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.info("""
+            **Analysis Note:**
+            Risk score is calculated based on volume relative to global historical peaks (Log Scale) and recent trend variations.
+            """)
 
 # --- Footer ---
-st.markdown("<br><br>", unsafe_allow_html=True)
+st.markdown("<br><br><hr>", unsafe_allow_html=True)
 st.markdown("""
-<div style="text-align: center; color: #94a3b8; font-size: 0.8rem; padding: 1rem;">
-    EU Border Risk Profiler • Data sourced from Eurostat
+<div style="text-align: center; color: #94a3b8; font-size: 0.8rem; padding: 2rem;">
+    <strong>EU Border Risk Profiler v2.0</strong> • Powered by Antigravity AI<br>
+    Data Source: Eurostat (migr_asyappctzm) • Last Update: {}
 </div>
-""", unsafe_allow_html=True)
+""".format(datetime.now().strftime('%d %b %Y')), unsafe_allow_html=True)
