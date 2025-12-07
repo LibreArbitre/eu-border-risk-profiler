@@ -234,25 +234,33 @@ def filter_data(df):
 
 def save_to_db(df):
     """
-    Sauvegarde le DataFrame en PostgreSQL
+    Sauvegarde le DataFrame en PostgreSQL avec UPSERT.
+    En cas de doublon (date, geo_code, citizen_code, applicant_type), 
+    on ADDITIONNE les total_applications car les chunks contiennent des données partielles.
     """
     if df.empty:
         logging.info("No data to save")
         return
     
-    logging.info(f"Saving {len(df)} records to database...")
+    logging.info(f"Saving {len(df)} records to database (UPSERT mode)...")
     
     engine = get_db_engine()
     
-    # Utiliser to_sql de Pandas - beaucoup plus simple !
-    df.to_sql(
-        'asylum_data',
-        engine,
-        if_exists='append',  # Append pour le chunking
-        index=False,
-        method='multi',
-        chunksize=1000
-    )
+    # Utiliser une insertion avec ON CONFLICT DO UPDATE pour sommer les valeurs
+    with engine.begin() as conn:
+        for _, row in df.iterrows():
+            conn.execute(text("""
+                INSERT INTO asylum_data (date, geo_code, citizen_code, applicant_type, total_applications)
+                VALUES (:date, :geo_code, :citizen_code, :applicant_type, :total_applications)
+                ON CONFLICT (date, geo_code, citizen_code, applicant_type) 
+                DO UPDATE SET total_applications = asylum_data.total_applications + EXCLUDED.total_applications
+            """), {
+                "date": row['date'],
+                "geo_code": row['geo_code'],
+                "citizen_code": row['citizen_code'],
+                "applicant_type": row['applicant_type'],
+                "total_applications": row['total_applications']
+            })
     
     logging.info("✅ Data saved successfully")
 
