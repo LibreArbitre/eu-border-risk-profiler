@@ -34,7 +34,7 @@ DB_HOST = require_env("DB_HOST")
 DB_PORT = require_env("DB_PORT", "5432")
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_size=20, max_overflow=10)
 SessionLocal = sessionmaker(bind=engine)
 
 
@@ -117,7 +117,7 @@ def healthcheck(session: Session = Depends(get_db_session)):
 @app.get("/api/v1/risk/latest", response_model=List[CurrentRiskResponse])
 def get_current_risk(
     threshold: Optional[float] = Query(
-        None, ge=0, description="Exclude predictions with a risk score above this value."
+        None, ge=0, le=100, description="Exclude predictions with a risk score above this value."
     ),
     horizon: Optional[int] = Query(
         None,
@@ -137,7 +137,35 @@ def get_current_risk(
     """
 
     try:
-        result = session.execute(query, {"horizon": horizon, "threshold": threshold})
+        snapshot = _select_best_snapshot(session)
+        if not snapshot:
+            logger.warning("No predictions found", extra={"event": "current_risk_not_found"})
+            raise HTTPException(status_code=404, detail="No predictions found")
+
+        query = text(
+            """
+            SELECT
+                geo_code,
+                predicted_risk_score AS score,
+                prediction_target_month,
+                (EXTRACT(YEAR FROM prediction_target_month) - EXTRACT(YEAR FROM date)) * 12
+                + (EXTRACT(MONTH FROM prediction_target_month) - EXTRACT(MONTH FROM date))
+                AS horizon_months,
+                NULL::float AS pct_change
+            FROM risk_predictions
+            WHERE run_id = :run_id
+              AND predicted_risk_score IS NOT NULL
+              AND (:threshold IS NULL OR predicted_risk_score <= :threshold)
+              AND (
+                  :horizon IS NULL
+                  OR (EXTRACT(YEAR FROM prediction_target_month) - EXTRACT(YEAR FROM date)) * 12
+                     + (EXTRACT(MONTH FROM prediction_target_month) - EXTRACT(MONTH FROM date))
+                     = :horizon
+              )
+            ORDER BY geo_code, prediction_target_month
+            """
+        )
+        result = session.execute(query, {"run_id": snapshot["run_id"], "horizon": horizon, "threshold": threshold})
         rows = result.fetchall()
         if not rows:
             logger.warning("No predictions found", extra={"event": "current_risk_not_found"})
@@ -168,7 +196,20 @@ def get_current_risk(
 def get_predictions(session: Session = Depends(get_db_session)):
     """Returns predictions for M+1..M+3."""
     try:
-        result = session.execute(text(query))
+        snapshot = _select_best_snapshot(session)
+        if not snapshot:
+            logger.warning("No predictions found", extra={"event": "predictions_not_found"})
+            raise HTTPException(status_code=404, detail="No predictions found")
+
+        query = text(
+            """
+            SELECT geo_code, risk_score_calculated, predicted_risk_score, date, prediction_target_month
+            FROM risk_predictions
+            WHERE run_id = :run_id AND predicted_risk_score IS NOT NULL
+            ORDER BY geo_code, prediction_target_month
+            """
+        )
+        result = session.execute(query, {"run_id": snapshot["run_id"]})
         rows = result.fetchall()
         if not rows:
             logger.warning("No predictions found", extra={"event": "predictions_not_found"})

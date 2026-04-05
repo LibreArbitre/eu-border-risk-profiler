@@ -65,7 +65,7 @@ model_registry_table = Table(
 
 
 def get_db_engine():
-    return create_engine(DATABASE_URL)
+    return create_engine(DATABASE_URL, pool_size=20, max_overflow=10)
 
 
 def configure_logging():
@@ -375,11 +375,12 @@ def calculate_risk_and_predict(df, engine):
 
             # Predict
             features = np.array([current_lags[0], current_lags[1], current_lags[2], next_month]).reshape(1, -1)
-            # Handle NaN in features?
             if np.isnan(features).any():
-                pred = 0
-            else:
-                pred = model.predict(features)[0]
+                logging.warning(
+                    "NaN in prediction features for %s horizon M+%s — skipping prediction", geo, i
+                )
+                continue
+            pred = model.predict(features)[0]
 
             # Cap prediction at 100 and floor at 0
             pred = max(0, min(100, pred))
@@ -545,5 +546,4 @@ if __name__ == "__main__":
         sys.exit(0 if healthy else 1)
 
     logging.info("Risk Predictor Service Starting...")
-    time.sleep(15)  # Wait for Harvester?
     start_scheduler()

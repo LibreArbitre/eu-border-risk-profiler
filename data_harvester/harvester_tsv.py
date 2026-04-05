@@ -124,9 +124,10 @@ def download_eurostat_tsv(url):
 
 def process_and_save_chunked(tsv_content, chunk_size=100000):
     """
-    Parse le TSV Eurostat en chunks et sauvegarde au fur et à mesure.
+    Parse le TSV Eurostat en chunks et retourne un DataFrame agrégé.
     OPTIMISÉ: Filtre et agrège AVANT le melt pour réduire la consommation mémoire.
     FIX: dtype=str pour éviter les DtypeVerify warnings
+    Retourne un DataFrame combiné (le write en base est géré par run_harvest).
     """
     logging.info("Starting optimized chunked processing...")
 
@@ -184,7 +185,7 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
             dtype=str,  # <--- CRITICAL FIX FOR WARNINGS
         )
 
-        total_rows = 0
+        all_chunks = []
 
         for i, df in enumerate(chunk_iter):
             logging.info(f"Processing chunk {i + 1} ({len(df)} rows)...")
@@ -266,15 +267,23 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
             # Select final columns
             final_cols = ["date", "geo_code", "citizen_code", "applicant_type", "total_applications"]
             if not df_final.empty:
-                df_final = df_final[final_cols]
-                save_to_db(df_final)
-                total_rows += len(df_final)
-                logging.info(f"Chunk {i + 1}: Saved {len(df_final)} records")
+                all_chunks.append(df_final[final_cols])
+                logging.info(f"Chunk {i + 1}: Collected {len(df_final)} records")
 
             # Libérer la mémoire
             del df, dimensions, df_filtered, dimensions_filtered, df_agg, df_long, df_final
 
-        logging.info(f"Total records saved: {total_rows}")
+        if not all_chunks:
+            logging.warning("No valid records found across all chunks")
+            return pd.DataFrame()
+
+        combined = pd.concat(all_chunks, ignore_index=True)
+        # Agréger les valeurs identiques issues de chunks différents
+        combined = combined.groupby(
+            ["date", "geo_code", "citizen_code", "applicant_type"], as_index=False
+        )["total_applications"].sum()
+        logging.info(f"Total records collected: {len(combined)}")
+        return combined
 
     except Exception as e:
         logging.error(f"Chunk processing failed: {e}")
@@ -343,7 +352,7 @@ def filter_data(df):
 
 def save_to_db(df):
     """
-    Sauvegarde le DataFrame en PostgreSQL avec UPSERT.
+    Sauvegarde le DataFrame en PostgreSQL avec UPSERT par batch.
     En cas de doublon (date, geo_code, citizen_code, applicant_type),
     on ADDITIONNE les total_applications car les chunks contiennent des données partielles.
     """
@@ -351,30 +360,23 @@ def save_to_db(df):
         logging.info("No data to save")
         return
 
-    logging.info(f"Saving {len(df)} records to database (UPSERT mode)...")
+    logging.info(f"Saving {len(df)} records to database (batch UPSERT mode)...")
 
     engine = get_db_engine()
+    records = df.to_dict(orient="records")
 
-    # Utiliser une insertion avec ON CONFLICT DO UPDATE pour sommer les valeurs
     with engine.begin() as conn:
-        for _, row in df.iterrows():
-            conn.execute(
-                text("""
-                INSERT INTO asylum_data (date, geo_code, citizen_code, applicant_type, total_applications)
-                VALUES (:date, :geo_code, :citizen_code, :applicant_type, :total_applications)
-                ON CONFLICT (date, geo_code, citizen_code, applicant_type) 
-                DO UPDATE SET total_applications = asylum_data.total_applications + EXCLUDED.total_applications
+        conn.execute(
+            text("""
+            INSERT INTO asylum_data (date, geo_code, citizen_code, applicant_type, total_applications)
+            VALUES (:date, :geo_code, :citizen_code, :applicant_type, :total_applications)
+            ON CONFLICT (date, geo_code, citizen_code, applicant_type)
+            DO UPDATE SET total_applications = asylum_data.total_applications + EXCLUDED.total_applications
             """),
-                {
-                    "date": row["date"],
-                    "geo_code": row["geo_code"],
-                    "citizen_code": row["citizen_code"],
-                    "applicant_type": row["applicant_type"],
-                    "total_applications": row["total_applications"],
-                },
-            )
+            records,
+        )
 
-    logging.info("✅ Data saved successfully")
+    logging.info("Data saved successfully")
 
 
 def run_harvest():
@@ -411,15 +413,24 @@ def run_harvest():
         # 1. Télécharger le TSV
         tsv_content = download_eurostat_tsv(url)
 
-        # 1.5 Truncate table (mimic replace)
-        engine = get_db_engine()
-        with engine.connect() as conn:
-            conn.execute(text("TRUNCATE TABLE asylum_data"))
-            conn.commit()
-            logging.info("Table asylum_data truncated.")
+        # 2. Parser tous les chunks en mémoire
+        combined_df = process_and_save_chunked(tsv_content)
 
-        # 2. Parser et Sauvegarder en chunks
-        process_and_save_chunked(tsv_content)
+        # 3. Truncate + insert en une seule transaction atomique
+        # Si l'insert échoue, le truncate est annulé automatiquement (rollback)
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            conn.execute(text("TRUNCATE TABLE asylum_data"))
+            logging.info("Table asylum_data truncated.")
+            if not combined_df.empty:
+                conn.execute(
+                    text("""
+                    INSERT INTO asylum_data (date, geo_code, citizen_code, applicant_type, total_applications)
+                    VALUES (:date, :geo_code, :citizen_code, :applicant_type, :total_applications)
+                    """),
+                    combined_df.to_dict(orient="records"),
+                )
+                logging.info(f"Inserted {len(combined_df)} records into asylum_data.")
 
         # 3. Update Last-Modified
         if remote_last_mod:
