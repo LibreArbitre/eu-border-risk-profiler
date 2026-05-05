@@ -14,6 +14,8 @@ import streamlit as st
 
 # Configuration
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+API_KEY = os.getenv("API_KEY") or None
+_API_HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
 
 # Page config - must be first Streamlit command
 st.set_page_config(
@@ -139,7 +141,7 @@ st.markdown(
 def get_predictions():
     """Fetch risk predictions from API"""
     try:
-        r = requests.get(f"{API_URL}/api/v1/risk/predict", timeout=10)
+        r = requests.get(f"{API_URL}/api/v1/risk/predict", timeout=10, headers=_API_HEADERS)
         if r.status_code == 200:
             return pd.DataFrame(r.json())
         return pd.DataFrame()
@@ -151,7 +153,7 @@ def get_predictions():
 def get_latest():
     """Fetch latest risk data from API"""
     try:
-        r = requests.get(f"{API_URL}/api/v1/risk/latest", timeout=10)
+        r = requests.get(f"{API_URL}/api/v1/risk/latest", timeout=10, headers=_API_HEADERS)
         if r.status_code == 200:
             return pd.DataFrame(r.json())
         return pd.DataFrame()
@@ -162,7 +164,7 @@ def get_latest():
 def get_history(geo_code: str):
     """Fetch historical data for a country"""
     try:
-        r = requests.get(f"{API_URL}/api/v1/data/history/{geo_code}", timeout=10)
+        r = requests.get(f"{API_URL}/api/v1/data/history/{geo_code}", timeout=10, headers=_API_HEADERS)
         if r.status_code == 200:
             return pd.DataFrame(r.json())
         return pd.DataFrame()

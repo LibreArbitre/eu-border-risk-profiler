@@ -1,11 +1,11 @@
 import logging
 import os
-from datetime import date, datetime
-from typing import Optional, List, Dict, Any
-from fastapi import Depends, FastAPI, HTTPException, Query
+from typing import Any, Dict, List, Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
-from api_service.models import RiskPredictionResponse, HistoryPoint, CurrentRiskResponse
+
+from api_service.models import CurrentRiskResponse, HistoryPoint, RiskPredictionResponse
 
 
 logging.basicConfig(
@@ -27,47 +27,58 @@ def require_env(var_name: str, default: Optional[str] = None) -> str:
     return value
 
 
-DB_USER = require_env("DB_USER")
-DB_PASSWORD = require_env("DB_PASSWORD")
-DB_NAME = require_env("DB_NAME")
-DB_HOST = require_env("DB_HOST")
-DB_PORT = require_env("DB_PORT", "5432")
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
-
-
-def get_db_session():
-    """Provide a SQLAlchemy session with structured logging and cleanup."""
-
-    session: Session = SessionLocal()
-    logger.info("Opening database session", extra={"event": "db_session_open"})
-    try:
-        yield session
-    except Exception:
-        logger.exception("Database session error", extra={"event": "db_session_error"})
-        raise
-    finally:
-        session.close()
-        logger.info("Closed database session", extra={"event": "db_session_close"})
+def _build_database_url() -> str:
+    explicit = os.getenv("DATABASE_URL")
+    if explicit:
+        return explicit
+    user = require_env("DB_USER")
+    password = require_env("DB_PASSWORD")
+    name = require_env("DB_NAME")
+    host = require_env("DB_HOST")
+    port = require_env("DB_PORT", "5432")
+    return f"postgresql://{user}:{password}@{host}:{port}/{name}"
 
 
-def _coerce_date(value):
-    if isinstance(value, str):
-        return datetime.fromisoformat(value).date()
-    if isinstance(value, datetime):
-        return value.date()
-    return value
+DATABASE_URL = _build_database_url()
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+# Optional API key. When unset, the API stays open (matches the previous
+# behavior so single-host docker-compose deployments don't break). When set,
+# every protected endpoint must echo it via the X-API-Key header.
+API_KEY = os.getenv("API_KEY") or None
 
 
-def _months_between(start_date: date, end_date: date) -> int:
-    start = _coerce_date(start_date)
-    end = _coerce_date(end_date)
+def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
+    if API_KEY is None:
+        return
+    if x_api_key != API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+
+def _months_between(start_value, end_value) -> int:
+    """Return month delta between two date-like values (date, datetime, or ISO string)."""
+    from datetime import date, datetime
+
+    def _to_date(v):
+        if isinstance(v, str):
+            return datetime.fromisoformat(v).date()
+        if isinstance(v, datetime):
+            return v.date()
+        if isinstance(v, date):
+            return v
+        raise TypeError(f"Unsupported date value: {v!r}")
+
+    start = _to_date(start_value)
+    end = _to_date(end_value)
     return (end.year - start.year) * 12 + (end.month - start.month)
 
 
 def _select_best_snapshot(conn) -> Optional[Dict[str, Any]]:
+    """Pick the prediction batch with the highest row count, breaking ties by most recent prediction_date."""
     snapshot_query = text(
         """
         SELECT run_id, MAX(prediction_date) AS prediction_date, COUNT(*) AS row_count
@@ -78,21 +89,21 @@ def _select_best_snapshot(conn) -> Optional[Dict[str, Any]]:
         LIMIT 1
         """
     )
-    result = conn.execute(snapshot_query).fetchone()
-    if not result:
+    row = conn.execute(snapshot_query).fetchone()
+    if not row:
         return None
-
     return {
-        "run_id": result.run_id,
-        "prediction_date": result.prediction_date,
-        "row_count": result.row_count,
+        "run_id": row.run_id,
+        "prediction_date": row.prediction_date,
+        "row_count": row.row_count,
     }
 
 
-def _fetch_predictions_for_run(conn, run_id: str):
+def _fetch_snapshot_rows(conn, run_id: str):
     query = text(
         """
-        SELECT geo_code, predicted_risk_score, prediction_target_month, date
+        SELECT geo_code, date, prediction_target_month,
+               risk_score_calculated, predicted_risk_score
         FROM risk_predictions
         WHERE run_id = :run_id AND predicted_risk_score IS NOT NULL
         ORDER BY geo_code, prediction_target_month
@@ -102,58 +113,86 @@ def _fetch_predictions_for_run(conn, run_id: str):
 
 
 @app.get("/health")
-def healthcheck(session: Session = Depends(get_db_session)):
+def healthcheck():
     """Healthcheck endpoint verifying DB connectivity."""
-
     try:
-        session.execute(text("SELECT 1"))
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
         return {"status": "ok"}
-    except Exception as exc:  # pragma: no cover - used for runtime checks
+    except Exception as exc:
         logger.exception("Healthcheck failed", extra={"event": "healthcheck_error"})
         raise HTTPException(status_code=503, detail=str(exc))
 
 
-@app.get("/api/v1/risk/current", response_model=List[CurrentRiskResponse])
-@app.get("/api/v1/risk/latest", response_model=List[CurrentRiskResponse])
+@app.get(
+    "/api/v1/risk/current",
+    response_model=List[CurrentRiskResponse],
+    dependencies=[Depends(require_api_key)],
+)
+@app.get(
+    "/api/v1/risk/latest",
+    response_model=List[CurrentRiskResponse],
+    dependencies=[Depends(require_api_key)],
+)
 def get_current_risk(
     threshold: Optional[float] = Query(
-        None, ge=0, description="Exclude predictions with a risk score above this value."
+        None, ge=0, description="Include only predictions with a risk score at or below this value."
     ),
     horizon: Optional[int] = Query(
         None,
         ge=1,
         le=3,
-        description="Predictive horizon in months (M+1, M+2, or M+3).",
+        description="Predictive horizon in months (1, 2, or 3 — i.e. M+1, M+2, M+3).",
     ),
-    session: Session = Depends(get_db_session),
 ):
     """Return the most recent completed set of predictions with optional filtering.
 
     The query selects the prediction batch with the highest row count (most complete),
     falling back to the latest batch when counts tie. Clients can optionally filter
-    predictions by a maximum risk score (`threshold`) and by predictive horizon (`horizon`).
-    The predictive horizon is computed from the difference between the source month
-    (`date`) and the `prediction_target_month`.
+    predictions by a maximum risk score (`threshold`) and by predictive horizon.
+    The horizon is computed from the difference between the source month (`date`)
+    and the `prediction_target_month`.
     """
-
     try:
-        result = session.execute(query, {"horizon": horizon, "threshold": threshold})
-        rows = result.fetchall()
-        if not rows:
-            logger.warning("No predictions found", extra={"event": "current_risk_not_found"})
-            raise HTTPException(status_code=404, detail="No predictions found")
+        with engine.connect() as conn:
+            snapshot = _select_best_snapshot(conn)
+            if not snapshot:
+                logger.warning("No predictions found", extra={"event": "current_risk_not_found"})
+                raise HTTPException(status_code=404, detail="No predictions found")
+            rows = _fetch_snapshot_rows(conn, snapshot["run_id"])
 
-        return [
-            {
-                "geo_code": row.geo_code,
-                "risk_score": float(row.score),
-                "prediction_target_month": row.prediction_target_month,
-                "horizon_months": int(row.horizon_months),
-                "percent_change": float(row.pct_change) if row.pct_change is not None else None,
-                "type": "predicted",
-            }
-            for row in rows
-        ]
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            horizon_months = _months_between(row.date, row.prediction_target_month)
+            score = float(row.predicted_risk_score)
+
+            if horizon is not None and horizon_months != horizon:
+                continue
+            if threshold is not None and score > threshold:
+                continue
+
+            base = float(row.risk_score_calculated) if row.risk_score_calculated is not None else None
+            pct_change = ((score - base) / base * 100.0) if base else None
+
+            results.append(
+                {
+                    "geo_code": row.geo_code,
+                    "risk_score": score,
+                    "prediction_target_month": row.prediction_target_month,
+                    "horizon_months": int(horizon_months),
+                    "percent_change": pct_change,
+                    "type": "predicted",
+                }
+            )
+
+        if not results:
+            logger.warning(
+                "No predictions match filters",
+                extra={"event": "current_risk_filtered_empty", "horizon": horizon, "threshold": threshold},
+            )
+            raise HTTPException(status_code=404, detail="No predictions match the requested filters")
+
+        return results
     except HTTPException:
         raise
     except Exception:
@@ -164,15 +203,20 @@ def get_current_risk(
         raise HTTPException(status_code=500, detail="Failed to fetch current risk predictions")
 
 
-@app.get("/api/v1/risk/predict", response_model=List[RiskPredictionResponse])
-def get_predictions(session: Session = Depends(get_db_session)):
-    """Returns predictions for M+1..M+3."""
+@app.get(
+    "/api/v1/risk/predict",
+    response_model=List[RiskPredictionResponse],
+    dependencies=[Depends(require_api_key)],
+)
+def get_predictions():
+    """Returns predictions (M+1..M+3) drawn from the most complete recent snapshot."""
     try:
-        result = session.execute(text(query))
-        rows = result.fetchall()
-        if not rows:
-            logger.warning("No predictions found", extra={"event": "predictions_not_found"})
-            raise HTTPException(status_code=404, detail="No predictions found")
+        with engine.connect() as conn:
+            snapshot = _select_best_snapshot(conn)
+            if not snapshot:
+                logger.warning("No predictions found", extra={"event": "predictions_not_found"})
+                raise HTTPException(status_code=404, detail="No predictions found")
+            rows = _fetch_snapshot_rows(conn, snapshot["run_id"])
 
         return [
             {
@@ -192,27 +236,30 @@ def get_predictions(session: Session = Depends(get_db_session)):
         raise HTTPException(status_code=500, detail="Failed to fetch predictions")
 
 
-@app.get("/api/v1/data/history/{geo_code}", response_model=List[HistoryPoint])
-def get_history(geo_code: str, session: Session = Depends(get_db_session)):
+@app.get(
+    "/api/v1/data/history/{geo_code}",
+    response_model=List[HistoryPoint],
+    dependencies=[Depends(require_api_key)],
+)
+def get_history(geo_code: str):
     """Returns raw applications count for line chart, aggregated by date."""
     query = text(
         """
-        SELECT date, SUM(total_applications) as total_applications 
-        FROM asylum_data 
-        WHERE geo_code = :geo AND applicant_type='FRST' 
-        GROUP BY date 
+        SELECT date, SUM(total_applications) AS total_applications
+        FROM asylum_data
+        WHERE geo_code = :geo AND applicant_type = 'FRST'
+        GROUP BY date
         ORDER BY date
         """
     )
     try:
-        result = session.execute(query, {"geo": geo_code})
-        rows = result.fetchall()
+        with engine.connect() as conn:
+            rows = conn.execute(query, {"geo": geo_code}).fetchall()
         if not rows:
             logger.warning(
                 "No history found for geo code", extra={"event": "history_not_found", "geo_code": geo_code}
             )
             raise HTTPException(status_code=404, detail="No history found")
-
         return [{"date": r.date, "total": int(r.total_applications)} for r in rows]
     except HTTPException:
         raise
