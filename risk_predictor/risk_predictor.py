@@ -48,6 +48,13 @@ MODEL_NAME = "random_forest_risk"
 MODEL_HYPERPARAMS = {"n_estimators": 50, "random_state": 42}
 MODEL_MAX_AGE_DAYS = int(os.getenv("MODEL_MAX_AGE_DAYS", "30"))
 DRIFT_TOLERANCE = float(os.getenv("DRIFT_TOLERANCE", "0.15"))
+# Fraction of the most recent observations held out for honest evaluation. The
+# rest is used to fit the candidate model whose error on the hold-out becomes
+# the reported `test_mae`. The production model is then refit on the full
+# dataset so we don't waste signal at inference time.
+HOLDOUT_TEST_RATIO = float(os.getenv("HOLDOUT_TEST_RATIO", "0.2"))
+HOLDOUT_MIN_TEST = int(os.getenv("HOLDOUT_MIN_TEST", "2"))
+HOLDOUT_MIN_TRAIN = int(os.getenv("HOLDOUT_MIN_TRAIN", "6"))
 
 # Define SQLAlchemy table for model registry
 metadata = MetaData()
@@ -187,6 +194,13 @@ def model_is_stale(trained_at: datetime | None) -> bool:
 
 
 def evaluate_model(train_df: pd.DataFrame, model) -> float | None:
+    """In-sample MAE for a trained model.
+
+    Kept for backward compatibility with existing tests/callers; this number
+    is the residual error on the data the model was fit on, so it cannot be
+    used as a generalization signal. Prefer ``evaluate_model_holdout`` when
+    you need an honest performance estimate.
+    """
     if model is None:
         return None
     try:
@@ -196,6 +210,49 @@ def evaluate_model(train_df: pd.DataFrame, model) -> float | None:
         return float(np.mean(np.abs(preds - target)))
     except Exception:
         logging.exception("Failed to evaluate model performance")
+        return None
+
+
+def temporal_split(train_df: pd.DataFrame, test_ratio: float = HOLDOUT_TEST_RATIO,
+                   min_test: int = HOLDOUT_MIN_TEST, min_train: int = HOLDOUT_MIN_TRAIN):
+    """Split a per-country frame into (train, test) chronologically.
+
+    Returns ``(train_part, test_part)`` where ``test_part`` is the most
+    recent ``test_ratio`` fraction of rows (capped to leave at least
+    ``min_train`` rows for fitting). Returns ``(train_df, None)`` if the
+    series is too short to support a meaningful hold-out — callers should
+    skip honest evaluation in that case.
+    """
+    if train_df is None or len(train_df) == 0:
+        return train_df, None
+
+    ordered = train_df.sort_values("date") if "date" in train_df.columns else train_df
+
+    n = len(ordered)
+    n_test = max(min_test, int(round(n * test_ratio)))
+    n_test = min(n_test, n - min_train)
+    if n_test < min_test:
+        return ordered, None
+
+    train_part = ordered.iloc[:-n_test]
+    test_part = ordered.iloc[-n_test:]
+    return train_part, test_part
+
+
+def evaluate_model_holdout(test_df: pd.DataFrame, model) -> float | None:
+    """MAE on a hold-out frame the model has *not* seen.
+
+    Returns ``None`` if the test frame is empty/None or evaluation fails.
+    """
+    if model is None or test_df is None or len(test_df) == 0:
+        return None
+    try:
+        features = test_df[["lag_1", "lag_2", "lag_3", "month"]]
+        target = test_df["risk_score"]
+        preds = model.predict(features)
+        return float(np.mean(np.abs(preds - target)))
+    except Exception:
+        logging.exception("Failed to evaluate model on hold-out")
         return None
 
 
@@ -244,10 +301,24 @@ def get_or_train_model(
         )
         return model, model_id, {"reused": True, "data_signature": data_signature}
 
-    old_mae = evaluate_model(train_df, model) if model else None
+    train_part, test_part = temporal_split(train_df)
+    has_holdout = test_part is not None and len(test_part) > 0
+
+    # Honest hold-out evaluation: previous model's MAE on data it has never
+    # seen, vs. a candidate model fit on the train portion only and scored
+    # on the same hold-out. This gives us a real generalization signal for
+    # drift detection.
+    old_test_mae = evaluate_model_holdout(test_part, model) if (model and has_holdout) else None
+    candidate_test_mae = None
+    if has_holdout:
+        candidate = train_model(train_part)
+        candidate_test_mae = evaluate_model_holdout(test_part, candidate)
+
+    # The deployed model is fit on the FULL training set so we don't waste
+    # the most recent signal at inference time.
     model = train_model(train_df)
-    new_mae = evaluate_model(train_df, model)
-    log_model_drift(old_mae, new_mae, geo_code)
+    new_mae = evaluate_model(train_df, model)  # in-sample residual
+    log_model_drift(old_test_mae, candidate_test_mae, geo_code)
 
     metadata_payload = {
         **MODEL_HYPERPARAMS,
@@ -256,8 +327,11 @@ def get_or_train_model(
     }
     if new_mae is not None:
         metadata_payload["train_mae"] = new_mae
-    if old_mae is not None:
-        metadata_payload["prev_mae"] = old_mae
+    if candidate_test_mae is not None:
+        metadata_payload["test_mae"] = candidate_test_mae
+        metadata_payload["test_size"] = len(test_part)
+    if old_test_mae is not None:
+        metadata_payload["prev_test_mae"] = old_test_mae
     model_id = persister(engine, geo_code, model, metadata_payload)
 
     if model_id is None:
@@ -271,7 +345,12 @@ def get_or_train_model(
         stale,
     )
 
-    return model, model_id, {"reused": False, "data_signature": data_signature, "train_mae": new_mae}
+    return model, model_id, {
+        "reused": False,
+        "data_signature": data_signature,
+        "train_mae": new_mae,
+        "test_mae": candidate_test_mae,
+    }
 
 
 def calculate_risk_and_predict(df, engine):
@@ -351,11 +430,12 @@ def calculate_risk_and_predict(df, engine):
             )
         else:
             logging.info(
-                "Model %s for %s retrained (signature=%s, train_mae=%s)",
+                "Model %s for %s retrained (signature=%s, train_mae=%s, test_mae=%s)",
                 model_id,
                 geo,
                 model_info.get("data_signature", ""),
                 model_info.get("train_mae"),
+                model_info.get("test_mae"),
             )
 
         # Predict for M+1, M+2, M+3 from the LAST available point

@@ -3,7 +3,13 @@ from functools import partial
 import pandas as pd
 import pytest
 import risk_predictor.risk_predictor as rp
-from risk_predictor.risk_predictor import calculate_risk_and_predict, compute_data_signature, get_or_train_model
+from risk_predictor.risk_predictor import (
+    calculate_risk_and_predict,
+    compute_data_signature,
+    evaluate_model_holdout,
+    get_or_train_model,
+    temporal_split,
+)
 
 
 class MockEngine:
@@ -171,3 +177,53 @@ def test_reuse_model_when_data_signature_matches(monkeypatch):
     assert model is reused_model
     assert model_id == 99
     assert info["reused"] is True
+
+
+def test_temporal_split_holds_out_recent_rows():
+    df = pd.DataFrame({
+        "date": pd.date_range("2023-01-01", periods=20, freq="MS"),
+        "risk_score": range(20),
+        "lag_1": range(20),
+        "lag_2": range(20),
+        "lag_3": range(20),
+        "month": [d.month for d in pd.date_range("2023-01-01", periods=20, freq="MS")],
+    })
+
+    train_part, test_part = temporal_split(df, test_ratio=0.2, min_test=2, min_train=6)
+
+    assert test_part is not None
+    assert len(test_part) == 4  # round(20 * 0.2) = 4
+    assert len(train_part) == 16
+    # Test set must be the most recent slice
+    assert test_part["date"].min() > train_part["date"].max()
+
+
+def test_temporal_split_returns_none_test_when_too_short():
+    df = pd.DataFrame({
+        "date": pd.date_range("2023-01-01", periods=5, freq="MS"),
+        "risk_score": range(5),
+    })
+
+    train_part, test_part = temporal_split(df, test_ratio=0.2, min_test=2, min_train=6)
+
+    assert test_part is None
+    assert len(train_part) == 5
+
+
+def test_evaluate_model_holdout_handles_empty_inputs():
+    model = DummyModel(value=5.0)
+    assert evaluate_model_holdout(None, model) is None
+    assert evaluate_model_holdout(pd.DataFrame(), model) is None
+
+
+def test_evaluate_model_holdout_returns_mae():
+    test_df = pd.DataFrame({
+        "lag_1": [1, 2, 3],
+        "lag_2": [1, 2, 3],
+        "lag_3": [1, 2, 3],
+        "month": [1, 2, 3],
+        "risk_score": [4.0, 6.0, 8.0],
+    })
+    model = DummyModel(value=5.0)
+    # Predictions are constant 5; absolute errors are |4-5|, |6-5|, |8-5| = 1, 1, 3 → mean = 5/3
+    assert evaluate_model_holdout(test_df, model) == pytest.approx(5 / 3)

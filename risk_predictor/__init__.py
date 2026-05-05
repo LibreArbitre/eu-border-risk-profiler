@@ -11,6 +11,7 @@ from .risk_predictor import (
     compute_data_signature,
     configure_logging,
     evaluate_model,
+    evaluate_model_holdout,
     get_data_from_db,
     get_db_engine,
     get_or_train_model,
@@ -22,6 +23,7 @@ from .risk_predictor import (
     run_job,
     save_predictions,
     start_scheduler,
+    temporal_split,
     train_model,
 )
 
@@ -32,6 +34,7 @@ __all__ = [
     "compute_data_signature",
     "configure_logging",
     "evaluate_model",
+    "evaluate_model_holdout",
     "get_data_from_db",
     "get_db_engine",
     "get_or_train_model",
@@ -43,5 +46,6 @@ __all__ = [
     "run_job",
     "save_predictions",
     "start_scheduler",
+    "temporal_split",
     "train_model",
 ]
