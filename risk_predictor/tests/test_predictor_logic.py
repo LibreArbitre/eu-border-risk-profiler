@@ -292,3 +292,17 @@ def test_predict_with_quantiles_handles_missing_estimators():
 def test_predict_with_quantiles_handles_none_model():
     point, p10, p90 = predict_with_quantiles(None, np.zeros((1, 4)))
     assert (point, p10, p90) == (None, None, None)
+
+
+def test_ensure_predictions_schema_swallows_engine_errors(monkeypatch):
+    """The migration helper must never crash the predictor — if the DB
+    rejects the ALTER (insufficient privilege, missing table…), we log
+    and continue so the next INSERT raises the original informative
+    error rather than masking it with a startup crash."""
+
+    class _BadEngine:
+        def begin(self):  # pragma: no cover — exercised through the call below
+            raise RuntimeError("simulated DB outage")
+
+    # Should not raise.
+    rp.ensure_predictions_schema(engine=_BadEngine())

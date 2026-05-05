@@ -699,7 +699,38 @@ def run_job():
     logging.info("--- Job Finished ---")
 
 
+def ensure_predictions_schema(engine=None) -> None:
+    """Apply idempotent schema migrations for ``risk_predictions``.
+
+    PostgreSQL's docker-entrypoint only runs ``/docker-entrypoint-initdb.d``
+    scripts on the *first* volume initialisation. On a managed deployment
+    (Dokploy, Coolify, etc.) the database volume usually predates the
+    schema changes shipped with newer code, so we apply the column-level
+    additions defensively at predictor startup. ``ADD COLUMN IF NOT EXISTS``
+    is a no-op when the columns are already present, so the cost on a
+    healthy deployment is a single ALTER round-trip per process start.
+    """
+    engine = engine or get_db_engine()
+    statements = [
+        "ALTER TABLE risk_predictions "
+        "ADD COLUMN IF NOT EXISTS predicted_risk_score_p10 NUMERIC(5, 2)",
+        "ALTER TABLE risk_predictions "
+        "ADD COLUMN IF NOT EXISTS predicted_risk_score_p90 NUMERIC(5, 2)",
+    ]
+    try:
+        with engine.begin() as conn:
+            for stmt in statements:
+                conn.execute(text(stmt))
+        logging.info("Schema migrations applied (or already up-to-date).")
+    except Exception:
+        # Don't crash the predictor here — surface the failure but let the
+        # subsequent INSERT raise its own, more contextual error if the
+        # missing column genuinely persists.
+        logging.exception("Failed to apply schema migrations; continuing")
+
+
 def start_scheduler():
+    ensure_predictions_schema()
     run_job()
     # Run every day
     schedule.every().day.at("03:00").do(run_job)
