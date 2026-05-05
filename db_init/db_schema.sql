@@ -34,11 +34,19 @@ CREATE TABLE IF NOT EXISTS risk_predictions (
     geo_code VARCHAR(10) NOT NULL,
     risk_score_calculated NUMERIC(5, 2) NOT NULL, -- Score de risque pondéré (0.00 à 100.00)
     prediction_target_month DATE NOT NULL,       -- Mois prédit (M+1, M+2, M+3)
-    predicted_risk_score NUMERIC(5, 2),
+    predicted_risk_score NUMERIC(5, 2),           -- Médiane des arbres (point estimate)
+    predicted_risk_score_p10 NUMERIC(5, 2),       -- 10e percentile des arbres (borne basse)
+    predicted_risk_score_p90 NUMERIC(5, 2),       -- 90e percentile des arbres (borne haute)
     model_id INTEGER REFERENCES model_registry(id), -- Identifiant du modèle utilisé
     prediction_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     run_id VARCHAR(64) NOT NULL
 );
+
+-- Migration sûre pour les bases déjà initialisées : ajoute les colonnes si elles
+-- manquent. Pas d'effet si elles existent déjà.
+ALTER TABLE risk_predictions
+    ADD COLUMN IF NOT EXISTS predicted_risk_score_p10 NUMERIC(5, 2),
+    ADD COLUMN IF NOT EXISTS predicted_risk_score_p90 NUMERIC(5, 2);
 
 -- Index pour optimiser la recherche par pays et par date de prédiction
 CREATE UNIQUE INDEX idx_unique_prediction ON risk_predictions (run_id, geo_code, prediction_target_month);

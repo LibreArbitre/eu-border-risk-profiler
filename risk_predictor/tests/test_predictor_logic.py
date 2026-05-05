@@ -1,5 +1,6 @@
 from functools import partial
 
+import numpy as np
 import pandas as pd
 import pytest
 import risk_predictor.risk_predictor as rp
@@ -8,6 +9,7 @@ from risk_predictor.risk_predictor import (
     compute_data_signature,
     evaluate_model_holdout,
     get_or_train_model,
+    predict_with_quantiles,
     temporal_split,
 )
 
@@ -246,3 +248,47 @@ def test_is_data_fresh_accepts_recent_data(monkeypatch):
     recent_date = (pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=30)).normalize()
     df = pd.DataFrame({"date": [recent_date], "geo_code": ["FR"], "total_applications": [1000]})
     assert rp._is_data_fresh(df) is True
+
+
+class _ForestStub:
+    """Minimal stand-in for sklearn's RandomForestRegressor used by the
+    quantile extraction tests. Each estimator has a fixed predict() output."""
+
+    def __init__(self, per_tree_values):
+        self.estimators_ = [_TreeStub(v) for v in per_tree_values]
+
+    def predict(self, features):
+        # sklearn behaviour: average across trees.
+        return np.array([np.mean([e.predict(features)[0] for e in self.estimators_])])
+
+
+class _TreeStub:
+    def __init__(self, value):
+        self._value = float(value)
+
+    def predict(self, features):  # noqa: ARG002 — features unused
+        return np.array([self._value])
+
+
+def test_predict_with_quantiles_returns_mean_and_quantiles():
+    forest = _ForestStub([10.0, 20.0, 30.0, 40.0, 50.0])
+    point, p10, p90 = predict_with_quantiles(forest, np.zeros((1, 4)))
+    assert point == pytest.approx(30.0)
+    assert p10 == pytest.approx(np.quantile([10, 20, 30, 40, 50], 0.1))
+    assert p90 == pytest.approx(np.quantile([10, 20, 30, 40, 50], 0.9))
+
+
+def test_predict_with_quantiles_handles_missing_estimators():
+    class _NoEstimators:
+        def predict(self, features):  # noqa: ARG002
+            return np.array([42.0])
+
+    point, p10, p90 = predict_with_quantiles(_NoEstimators(), np.zeros((1, 4)))
+    assert point == pytest.approx(42.0)
+    assert p10 is None
+    assert p90 is None
+
+
+def test_predict_with_quantiles_handles_none_model():
+    point, p10, p90 = predict_with_quantiles(None, np.zeros((1, 4)))
+    assert (point, p10, p90) == (None, None, None)

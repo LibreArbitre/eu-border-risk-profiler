@@ -14,6 +14,8 @@ CREATE TABLE risk_predictions (
     risk_score_calculated REAL NOT NULL,
     prediction_target_month DATE NOT NULL,
     predicted_risk_score REAL,
+    predicted_risk_score_p10 REAL,
+    predicted_risk_score_p90 REAL,
     model_id INTEGER,
     prediction_date TIMESTAMP NOT NULL,
     run_id VARCHAR(64) NOT NULL

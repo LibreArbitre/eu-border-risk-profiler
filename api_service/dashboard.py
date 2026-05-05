@@ -257,18 +257,20 @@ if not df_pred.empty:
     # 3. Merge back to get the rows corresponding to these latest dates
     merged = pd.merge(df_pred, latest_dates, on=["geo_code", "date"])
 
-    # 4. Aggregate predictions (Stable indicator: Mean of 3 months horizon)
-    df_map = (
-        merged.groupby("geo_code")
-        .agg(
-            {
-                "risk_score_calculated": "first",  # Current calculated risk
-                "predicted_risk_score": "mean",  # Average risk in next 3 months (Stable)
-                "date": "first",
-            }
-        )
-        .reset_index()
-    )
+    # 4. Aggregate predictions (Stable indicator: Mean of 3 months horizon).
+    #    The P10/P90 columns may be absent on legacy rows; aggregate them
+    #    only when present so older data still renders without quantiles.
+    agg_spec = {
+        "risk_score_calculated": "first",  # Current calculated risk
+        "predicted_risk_score": "mean",     # Average risk in next 3 months (Stable)
+        "date": "first",
+    }
+    if "predicted_risk_score_p10" in merged.columns:
+        agg_spec["predicted_risk_score_p10"] = "mean"
+    if "predicted_risk_score_p90" in merged.columns:
+        agg_spec["predicted_risk_score_p90"] = "mean"
+
+    df_map = merged.groupby("geo_code").agg(agg_spec).reset_index()
 
     df_map["risk_score"] = df_map["predicted_risk_score"]  # Use this for viz
     valid_data = True
@@ -505,11 +507,24 @@ if valid_data:
         with col_stats:
             # Show specific stats for this country
             row = df_map[df_map["geo_code"] == selected_code].iloc[0]
+
+            # Confidence band line — only when both quantiles are present.
+            band_html = ""
+            p10 = row.get("predicted_risk_score_p10") if hasattr(row, "get") else None
+            p90 = row.get("predicted_risk_score_p90") if hasattr(row, "get") else None
+            if p10 is not None and p90 is not None and not pd.isna(p10) and not pd.isna(p90):
+                band_html = (
+                    f'<div style="color: #64748b; font-size: 0.85rem; margin-top:0.25rem;">'
+                    f'P10–P90 : {float(p10):.1f} – {float(p90):.1f}'
+                    f'</div>'
+                )
+
             st.markdown(
                 f"""
             <div class="metric-card">
                 <div class="metric-label">{t("deep_dive.current_label")}</div>
                 <div class="metric-value">{row["risk_score"]:.1f}</div>
+                {band_html}
                 <div style="color: #64748b; font-size: 0.9rem; margin-top:0.5rem;">
                     {t("deep_dive.assessment_prefix")} {row["date"].strftime("%b %Y")}
                 </div>

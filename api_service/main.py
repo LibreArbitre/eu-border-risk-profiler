@@ -103,13 +103,19 @@ def _fetch_snapshot_rows(conn, run_id: str):
     query = text(
         """
         SELECT geo_code, date, prediction_target_month,
-               risk_score_calculated, predicted_risk_score
+               risk_score_calculated, predicted_risk_score,
+               predicted_risk_score_p10, predicted_risk_score_p90
         FROM risk_predictions
         WHERE run_id = :run_id AND predicted_risk_score IS NOT NULL
         ORDER BY geo_code, prediction_target_month
         """
     )
     return conn.execute(query, {"run_id": run_id}).fetchall()
+
+
+def _maybe_float(value):
+    """Coerce a possibly-NULL numeric DB value into a Python float or None."""
+    return float(value) if value is not None else None
 
 
 @app.get("/health")
@@ -178,6 +184,8 @@ def get_current_risk(
                 {
                     "geo_code": row.geo_code,
                     "risk_score": score,
+                    "risk_score_p10": _maybe_float(getattr(row, "predicted_risk_score_p10", None)),
+                    "risk_score_p90": _maybe_float(getattr(row, "predicted_risk_score_p90", None)),
                     "prediction_target_month": row.prediction_target_month,
                     "horizon_months": int(horizon_months),
                     "percent_change": pct_change,
@@ -223,6 +231,8 @@ def get_predictions():
                 "geo_code": r.geo_code,
                 "risk_score_calculated": float(r.risk_score_calculated),
                 "predicted_risk_score": float(r.predicted_risk_score),
+                "predicted_risk_score_p10": _maybe_float(getattr(r, "predicted_risk_score_p10", None)),
+                "predicted_risk_score_p90": _maybe_float(getattr(r, "predicted_risk_score_p90", None)),
                 "date": r.date,
                 "prediction_target_month": r.prediction_target_month,
                 "type": "predicted",

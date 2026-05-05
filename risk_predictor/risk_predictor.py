@@ -220,6 +220,45 @@ def evaluate_model(train_df: pd.DataFrame, model) -> float | None:
         return None
 
 
+def predict_with_quantiles(model, features: np.ndarray, quantiles=(0.1, 0.9)):
+    """Return ``(point_estimate, low_quantile, high_quantile)`` for a single sample.
+
+    ``RandomForestRegressor.predict`` averages every tree's output. Here we
+    keep the per-tree predictions instead and report the requested quantiles
+    plus the mean (for backwards compatibility with the existing
+    ``predicted_risk_score`` field). This gives a free uncertainty band
+    without adding a dependency.
+    """
+    if model is None:
+        return None, None, None
+    try:
+        per_tree = np.array(
+            [estimator.predict(features)[0] for estimator in getattr(model, "estimators_", [])]
+        )
+    except Exception:
+        logging.exception("Failed to extract per-tree predictions; falling back to mean only")
+        try:
+            mean = float(model.predict(features)[0])
+            return mean, None, None
+        except Exception:
+            return None, None, None
+
+    if per_tree.size == 0:
+        # Fallback for models that don't expose estimators_ (shouldn't happen
+        # with sklearn RF, but stay defensive).
+        try:
+            mean = float(model.predict(features)[0])
+            return mean, None, None
+        except Exception:
+            return None, None, None
+
+    point = float(per_tree.mean())
+    low_q, high_q = quantiles
+    p_low = float(np.quantile(per_tree, low_q))
+    p_high = float(np.quantile(per_tree, high_q))
+    return point, p_low, p_high
+
+
 def temporal_split(train_df: pd.DataFrame, test_ratio: float = HOLDOUT_TEST_RATIO,
                    min_test: int = HOLDOUT_MIN_TEST, min_train: int = HOLDOUT_MIN_TRAIN):
     """Split a per-country frame into (train, test) chronologically.
@@ -460,16 +499,23 @@ def calculate_risk_and_predict(df, engine):
             next_date = last_date + pd.DateOffset(months=i)
             next_month = next_date.month
 
-            # Predict
+            # Predict — pull per-tree predictions so we can report a P10/P90
+            # band alongside the point estimate. The point estimate is the
+            # mean across trees, which matches sklearn's default predict().
             features = np.array([current_lags[0], current_lags[1], current_lags[2], next_month]).reshape(1, -1)
-            # Handle NaN in features?
             if np.isnan(features).any():
-                pred = 0
+                pred, p10, p90 = 0.0, None, None
             else:
-                pred = model.predict(features)[0]
+                pred, p10, p90 = predict_with_quantiles(model, features)
+                if pred is None:
+                    pred, p10, p90 = 0.0, None, None
 
-            # Cap prediction at 100 and floor at 0
-            pred = max(0, min(100, pred))
+            # Cap predictions at 100 and floor at 0 for the score scale.
+            pred = max(0.0, min(100.0, pred))
+            if p10 is not None:
+                p10 = max(0.0, min(100.0, p10))
+            if p90 is not None:
+                p90 = max(0.0, min(100.0, p90))
 
             predictions.append(
                 {
@@ -478,6 +524,8 @@ def calculate_risk_and_predict(df, engine):
                     "risk_score_calculated": float(current_score),
                     "prediction_target_month": next_date.date(),
                     "predicted_risk_score": float(pred),
+                    "predicted_risk_score_p10": float(p10) if p10 is not None else None,
+                    "predicted_risk_score_p90": float(p90) if p90 is not None else None,
                     "model_id": model_id,
                 }
             )
