@@ -67,13 +67,35 @@ The system calculates a "Risk Score" (0-100) for every country/month:
 
 ```
 eu-border-risk-profiler/
-├── api_service/      # FastAPI backend
-├── dashboard/        # Streamlit frontend (logic + UI)
-├── data_harvester/   # Eurostat parser & loader
-├── risk_predictor/   # ML training & scoring engine (RandomForest)
+├── api_service/      # FastAPI backend + Streamlit dashboard
+├── data_harvester/   # Eurostat parser & loader (atomic staging swap)
+├── risk_predictor/   # ML training & scoring engine (RandomForest, hold-out eval)
+├── db_init/          # PostgreSQL schema bootstrap
+├── docs/             # Formal documentation (ADRs, model card, threat model)
 ├── docker-compose.yml
-└── OPERATIONS_GUIDE.md # Detailed runbook
+├── DEPLOYMENT_GUIDE.md
+├── DOKPLOY_GUIDE.md
+└── OPERATIONS_GUIDE.md
 ```
+
+## Documentation
+
+Operational guides for running and deploying the system:
+
+- [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) — Docker Compose deployment.
+- [DOKPLOY_GUIDE.md](DOKPLOY_GUIDE.md) — Dokploy-specific notes.
+- [OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) — runbook.
+
+Formal engineering and governance documentation under [`docs/`](docs/):
+
+- [Architecture Decision Records](docs/adr/README.md) — load-bearing
+  technical choices, in Michael Nygard's ADR format.
+- [Model Card](docs/MODEL_CARD.md) — predictive component scope,
+  evaluation methodology, intended and out-of-scope uses.
+- [Data Card](docs/DATA_CARD.md) — source dataset description, lag
+  and revision behaviour, what the data is *not*.
+- [Security posture](docs/SECURITY.md) — STRIDE threat model and
+  controls.
 
 ## License
 
