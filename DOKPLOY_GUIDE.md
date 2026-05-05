@@ -30,10 +30,31 @@ DB_HOST=db
 
 **Optional Variables (with defaults):**
 ```
+# Scheduler timezone (default Europe/Paris). The harvester runs daily at
+# 02:00 and the predictor at 03:00 in this zone. Pick UTC if your VPS is
+# UTC and you want predictable scheduling.
+TZ=Europe/Paris
+
+# Resilience knobs
 RETRY_MAX_ATTEMPTS=3
 RETRY_BACKOFF_SECONDS=2
 EXIT_ON_FAILURE=true
+
+# API authentication (recommended on a public VPS).
+# Leave empty to keep the API open. When set, every protected endpoint
+# requires the same value in the X-API-Key header. The bundled dashboard
+# reads API_KEY automatically and forwards it.
+# Generate a value with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+API_KEY=
 ```
+
+> **Database port binding.** `docker-compose.yml` exposes Postgres on
+> `127.0.0.1:5432`, i.e. only on the VPS loopback. Other Dokploy
+> containers in the same project network reach it via `db:5432` regardless
+> of this binding. Dokploy's reverse proxy (Traefik) handles HTTP routing
+> for `api_service` (port 8000) and `dashboard` (port 8501) — you usually
+> won't need to expose either of those directly either; map them to a
+> domain in the Dokploy UI instead.
 
 #### 3. Service Startup Order
 
@@ -55,6 +76,12 @@ curl https://your-domain.com:8000/health
 # Should return: {"status":"ok"}
 ```
 
+`/health` stays public even when `API_KEY` is set. Protected endpoints
+return `401` without the matching header:
+```bash
+curl -H "X-API-Key: $API_KEY" https://your-domain.com:8000/api/v1/risk/predict
+```
+
 **Swagger UI:**
 Open `https://your-domain.com:8000/docs` in your browser.
 
@@ -66,8 +93,17 @@ Open `https://your-domain.com:8501` in your browser.
 If a service fails to start, check the logs:
 
 1.  **db**: Should show `database system is ready to accept connections`
-2.  **data_harvester**: Look for `Fetching data from Eurostat...` then `Data saved successfully`
-3.  **risk_predictor**: Look for `Processing X countries...` then `Predictions saved`
+2.  **data_harvester**: Look for `Downloading Eurostat TSV bulk file...`,
+    `Staging table asylum_data_staging prepared.`, then
+    `Staging promoted to asylum_data atomically.` and finally
+    `HARVEST COMPLETED SUCCESSFULLY`. The harvester writes
+    `/tmp/harvester_health` after each successful cycle and the docker
+    healthcheck verifies that file is younger than
+    `HARVESTER_HEALTH_MAX_AGE_SECONDS` (default 25 h).
+3.  **risk_predictor**: Look for `Trained and persisted model X for ...`
+    or `Model X for ... reused (signature=...)`, then `Predictions saved
+    for run ...`. Logs include `train_mae` and `test_mae` (honest hold-out
+    error) when a model is retrained.
 4.  **api_service**: Should show `Application startup complete`
 5.  **dashboard**: Should show `You can now view your Streamlit app in your browser`
 

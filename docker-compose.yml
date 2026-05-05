@@ -37,6 +37,7 @@ services:
       db:
         condition: service_healthy
     environment:
+      TZ: ${TZ:-Europe/Paris}
       DB_HOST: db
       DB_USER: ${DB_USER:-user}
       DB_PASSWORD: ${DB_PASSWORD:-password}
@@ -70,6 +71,7 @@ services:
       db:
         condition: service_healthy
     environment:
+      TZ: ${TZ:-Europe/Paris}
       DB_HOST: db
       DB_USER: ${DB_USER:-user}
       DB_PASSWORD: ${DB_PASSWORD:-password}

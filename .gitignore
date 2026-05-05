@@ -53,3 +53,6 @@ Thumbs.db
 # Health files
 /tmp/harvester_health
 /tmp/predictor_health
+
+# Local tool / worktree directories
+.claude/
