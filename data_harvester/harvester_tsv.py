@@ -24,6 +24,15 @@ HEALTH_FILE = os.getenv("HARVESTER_HEALTH_FILE", "/tmp/harvester_health")
 HEALTH_MAX_AGE_SECONDS = int(os.getenv("HARVESTER_HEALTH_MAX_AGE_SECONDS", str(25 * 3600)))
 STAGING_TABLE = "asylum_data_staging"
 
+# Identify ourselves to Eurostat in the User-Agent so the operator of the
+# Eurostat dissemination service can attribute traffic. Conforms to the
+# Eurostat re-use policy (see docs/DATA_CARD.md).
+HARVESTER_USER_AGENT = os.getenv(
+    "HARVESTER_USER_AGENT",
+    "eu-border-risk-profiler/1.0 (+https://github.com/LibreArbitre/eu-border-risk-profiler)",
+)
+EUROSTAT_HTTP_HEADERS = {"User-Agent": HARVESTER_USER_AGENT}
+
 
 def _touch_health_file() -> None:
     """Update the mtime of the health file so the container healthcheck sees a recent run."""
@@ -113,7 +122,7 @@ def update_local_last_modified(last_modified_str):
 def get_remote_details(url):
     """Récupère les headers du fichier distant sans télécharger"""
     try:
-        response = requests.head(url, timeout=30)
+        response = requests.head(url, timeout=30, headers=EUROSTAT_HTTP_HEADERS)
         response.raise_for_status()
         return response.headers.get("Last-Modified"), int(response.headers.get("Content-Length", 0))
     except Exception as e:
@@ -131,7 +140,7 @@ def download_eurostat_tsv(url):
     # Download with stream to avoid memory issues and show progress
     local_filename = "/tmp/eurostat_data.tsv"
     try:
-        with requests.get(url, stream=True, timeout=120) as r:
+        with requests.get(url, stream=True, timeout=120, headers=EUROSTAT_HTTP_HEADERS) as r:
             r.raise_for_status()
             downloaded = 0
             with open(local_filename, "wb") as f:

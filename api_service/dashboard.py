@@ -537,6 +537,63 @@ if valid_data:
             Risk score is calculated based on volume relative to global historical peaks (Log Scale) and recent trend variations.
             """)
 
+# --- About this data ---
+st.markdown("<br><br>", unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-header"><span>ℹ️</span> About this data</div>',
+    unsafe_allow_html=True,
+)
+
+with st.expander("Source, methodology, intended use, and known limitations", expanded=False):
+    st.markdown(
+        """
+**Source.** Monthly first-time asylum applications published by **Eurostat**
+under dataset code [`migr_asyappctzm`](https://ec.europa.eu/eurostat/databrowser/view/migr_asyappctzm/default/table)
+("*Asylum applicants by type, citizenship, age and sex — monthly data*").
+The dataset is updated monthly with a typical reporting lag of **one to
+two months**; recent months may be revised when Member States submit
+corrections. The data is aggregated to the (date, destination Member
+State) level by this project before any modelling.
+
+**What the score means.** The **Risk Index** shown here is a 0-100
+indicator of *administrative pressure* on a Member State's first-time
+asylum procedure for a given month, derived as
+`vol_norm × (1 + variation) × 100`, where `vol_norm` is the volume
+log-normalised against the all-time EU peak and `variation` is the
+month-over-month change. A 27-country Random Forest forecasts the
+score for the next three months. See
+[Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md).
+
+**Intended use.** Operational situational awareness for migration
+policy analysts. The score helps surface Member States where
+short-term administrative pressure is likely to rise.
+
+**Out-of-scope use.** This dashboard **must not** inform decisions
+concerning individual asylum applicants, automated allocation between
+Member States, or any border-policing action. The score reflects
+administrative pressure on a Member State, not a judgement on the
+people applying.
+
+**Known limitations.** Reporting lag means the most recent month is
+often understated and the predictor automatically drops a country's
+last month if it would otherwise read as zero. Citizenship is
+currently aggregated to `TOTAL` — per-nationality breakdowns are on
+the roadmap. Forecasts at M+2 and M+3 are autoregressive and inherit
+M+1's error.
+
+**Citation.**
+> Eurostat. *Asylum applicants by type, citizenship, age and sex —
+> monthly data* (online data code: `migr_asyappctzm`).
+> Accessed via the EU Border Risk Profiler.
+
+**Further reading.**
+[Data Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/DATA_CARD.md) ·
+[Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md) ·
+[Architecture Decision Records](https://github.com/LibreArbitre/eu-border-risk-profiler/tree/main/docs/adr) ·
+[Security posture](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/SECURITY.md)
+        """
+    )
+
 # --- Footer ---
 st.markdown("<br><br><hr>", unsafe_allow_html=True)
 st.markdown(
