@@ -39,6 +39,13 @@ RETRY_BACKOFF_SECONDS = float(os.getenv("RETRY_BACKOFF_SECONDS", "2"))
 EXIT_ON_FAILURE = os.getenv("EXIT_ON_FAILURE", "true").lower() == "true"
 HEALTH_FILE = os.getenv("PREDICTOR_HEALTH_FILE", "/tmp/predictor_health")
 PREDICTION_RETENTION_DAYS = int(os.getenv("PREDICTION_RETENTION_DAYS", "90"))
+# A run that sees only data older than this many days is considered to be
+# reading a stale snapshot of asylum_data (e.g. because the harvester is
+# still mid-swap). The predictor will keep waiting instead of computing
+# and persisting predictions that the daily schedule won't refresh until
+# the next cycle. Eurostat publishes monthly with a typical 1-2 month lag,
+# so 120 days leaves headroom while still catching real freshness issues.
+DATA_FRESHNESS_MAX_AGE_DAYS = int(os.getenv("DATA_FRESHNESS_MAX_AGE_DAYS", "120"))
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL", f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
@@ -567,6 +574,25 @@ def save_predictions(df, engine=None, run_metadata=None):
         raise e
 
 
+def _is_data_fresh(df) -> bool:
+    """Return True if asylum_data contains at least one row newer than the
+    DATA_FRESHNESS_MAX_AGE_DAYS cutoff.
+
+    Treating an empty frame OR a frame whose newest `date` is months behind
+    the wall clock as "not fresh" prevents the predictor from racing the
+    harvester at boot and saving predictions against a stale snapshot.
+    """
+    if df is None or df.empty or "date" not in df.columns:
+        return False
+    try:
+        max_date = pd.to_datetime(df["date"]).max()
+    except Exception:
+        logging.exception("Failed to parse data dates while checking freshness")
+        return False
+    cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=DATA_FRESHNESS_MAX_AGE_DAYS)
+    return max_date >= cutoff
+
+
 def run_job():
     logging.info("--- Starting Risk Predictor Job ---")
     success = True
@@ -574,19 +600,42 @@ def run_job():
     try:
         engine = get_db_engine()
 
-        # Wait for data loop
+        # Wait for FRESH data loop. We don't just check that asylum_data has
+        # rows — a previous successful harvest can leave months-old data
+        # behind. Keep polling until a row newer than DATA_FRESHNESS_MAX_AGE_DAYS
+        # appears, which is the harvester's signal that its swap committed.
         max_wait_attempts = 60  # Wait up to 1 hour (60 * 60s)
+        df = pd.DataFrame()
         for attempt in range(max_wait_attempts):
             df = get_data_from_db()
-            if not df.empty:
+            if _is_data_fresh(df):
                 break
-            logging.warning(
-                f"No data found in DB (Attempt {attempt + 1}/{max_wait_attempts}). Waiting 60s for Harvester..."
-            )
+            if df.empty:
+                logging.warning(
+                    f"asylum_data empty (attempt {attempt + 1}/{max_wait_attempts}). Waiting 60s..."
+                )
+            else:
+                latest = pd.to_datetime(df["date"]).max().date()
+                logging.warning(
+                    "asylum_data only has data up to %s, older than %s days "
+                    "(attempt %s/%s). Waiting 60s for harvester to refresh...",
+                    latest,
+                    DATA_FRESHNESS_MAX_AGE_DAYS,
+                    attempt + 1,
+                    max_wait_attempts,
+                )
             time.sleep(60)
 
-        if df.empty:
-            raise ValueError("No data found in DB after waiting. Harvester might be broken.")
+        if not _is_data_fresh(df):
+            if df.empty:
+                raise ValueError(
+                    "No data found in DB after waiting. Harvester might be broken."
+                )
+            latest = pd.to_datetime(df["date"]).max().date()
+            raise ValueError(
+                f"asylum_data only has data up to {latest}, older than "
+                f"{DATA_FRESHNESS_MAX_AGE_DAYS} days. Refusing to run on stale snapshot."
+            )
 
         preds = calculate_risk_and_predict(df, engine)
         save_predictions(preds, engine=engine)

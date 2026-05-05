@@ -227,3 +227,22 @@ def test_evaluate_model_holdout_returns_mae():
     model = DummyModel(value=5.0)
     # Predictions are constant 5; absolute errors are |4-5|, |6-5|, |8-5| = 1, 1, 3 → mean = 5/3
     assert evaluate_model_holdout(test_df, model) == pytest.approx(5 / 3)
+
+
+def test_is_data_fresh_rejects_empty_frame():
+    assert rp._is_data_fresh(pd.DataFrame()) is False
+    assert rp._is_data_fresh(None) is False
+
+
+def test_is_data_fresh_rejects_old_data(monkeypatch):
+    monkeypatch.setattr(rp, "DATA_FRESHNESS_MAX_AGE_DAYS", 90)
+    old_date = (pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=200)).normalize()
+    df = pd.DataFrame({"date": [old_date], "geo_code": ["FR"], "total_applications": [1000]})
+    assert rp._is_data_fresh(df) is False
+
+
+def test_is_data_fresh_accepts_recent_data(monkeypatch):
+    monkeypatch.setattr(rp, "DATA_FRESHNESS_MAX_AGE_DAYS", 90)
+    recent_date = (pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=30)).normalize()
+    df = pd.DataFrame({"date": [recent_date], "geo_code": ["FR"], "total_applications": [1000]})
+    assert rp._is_data_fresh(df) is True

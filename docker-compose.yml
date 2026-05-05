@@ -56,6 +56,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      # The first cold harvest needs to download ~440 MB and stage it
+      # before the health file is written. Allow generous time so the
+      # container is not flagged unhealthy during that bootstrap.
+      start_period: 600s
     networks:
       - eubrp_net
 
@@ -66,9 +70,14 @@ services:
       dockerfile: Dockerfile
     container_name: eu_brp_predictor
     restart: on-failure
-    # Dépend de la DB pour démarrer. Le script attendra les données.
+    # Wait for the harvester to publish a fresh asylum_data table before
+    # training. The harvester healthcheck only reports healthy after the
+    # first staging swap, so this prevents the predictor from racing
+    # against the bootstrap and producing stale predictions.
     depends_on:
       db:
+        condition: service_healthy
+      data_harvester:
         condition: service_healthy
     environment:
       TZ: ${TZ:-Europe/Paris}

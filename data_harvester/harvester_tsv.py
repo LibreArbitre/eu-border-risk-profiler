@@ -497,6 +497,11 @@ def run_harvest():
         logging.info(f"Local Last-Modified:  {local_last_mod}")
 
         if remote_last_mod and remote_last_mod == local_last_mod:
+            # Touch the health file so a quiet day doesn't make us look stale
+            # to the docker healthcheck — we DID check, we just had nothing
+            # to do. asylum_data is unchanged from the previous successful
+            # swap so downstream services keep seeing valid data.
+            _touch_health_file()
             logging.info("✅ Data is up to date. No new download needed.")
             logging.info("=" * 60)
             return
@@ -548,9 +553,10 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
 
-    # Mark the container as healthy on startup so the initial harvest (which
-    # may take several minutes) doesn't trigger a false-positive unhealthy state.
-    _touch_health_file()
+    # Do NOT touch the health file pre-emptively. The container should only
+    # report healthy once the first run_harvest() succeeds — that's how
+    # downstream services (risk_predictor) know the staging swap is done.
+    # The compose `start_period` covers the long initial download.
 
     # Run harvest immediately on startup
     run_harvest()
