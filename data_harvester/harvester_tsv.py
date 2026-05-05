@@ -6,6 +6,8 @@ Remplace complètement l'ancien harvester problématique
 import csv
 import logging
 import os
+import signal
+import sys
 import time
 from io import StringIO
 
@@ -15,6 +17,36 @@ from sqlalchemy import create_engine, inspect, text
 
 # Configuration logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+HEALTH_FILE = os.getenv("HARVESTER_HEALTH_FILE", "/tmp/harvester_health")
+# Healthcheck considers the harvester unhealthy if the file hasn't been touched
+# in HEALTH_MAX_AGE_SECONDS. Default = 25h to absorb the daily 24h scheduler.
+HEALTH_MAX_AGE_SECONDS = int(os.getenv("HARVESTER_HEALTH_MAX_AGE_SECONDS", str(25 * 3600)))
+STAGING_TABLE = "asylum_data_staging"
+
+
+def _touch_health_file() -> None:
+    """Update the mtime of the health file so the container healthcheck sees a recent run."""
+    try:
+        with open(HEALTH_FILE, "w", encoding="utf-8") as fh:
+            fh.write(str(time.time()))
+    except OSError as exc:
+        logging.warning(f"Could not write health file {HEALTH_FILE}: {exc}")
+
+
+def _run_healthcheck() -> int:
+    """Exit 0 if the harvester has run recently, else 1.
+
+    Used by the docker-compose healthcheck. Replaces the previous always-success stub.
+    """
+    if not os.path.exists(HEALTH_FILE):
+        print(f"health file missing: {HEALTH_FILE}")
+        return 1
+    age = time.time() - os.path.getmtime(HEALTH_FILE)
+    if age > HEALTH_MAX_AGE_SECONDS:
+        print(f"health file too old: {age:.0f}s > {HEALTH_MAX_AGE_SECONDS}s")
+        return 1
+    return 0
 
 
 # Database connection
@@ -341,30 +373,95 @@ def filter_data(df):
     return df
 
 
-def save_to_db(df):
+def reset_staging_table():
+    """(Re)create the staging table as a clean copy of asylum_data's structure.
+
+    All chunks are written here first; the production table is only swapped
+    in after the full harvest succeeds (see ``promote_staging_to_production``).
     """
-    Sauvegarde le DataFrame en PostgreSQL avec UPSERT.
-    En cas de doublon (date, geo_code, citizen_code, applicant_type),
-    on ADDITIONNE les total_applications car les chunks contiennent des données partielles.
+    engine = get_db_engine()
+    with engine.begin() as conn:
+        conn.execute(text(f"DROP TABLE IF EXISTS {STAGING_TABLE}"))
+        # Use a regular table (not UNLOGGED) so the data is durable while we
+        # process chunks; the swap step relies on it being readable.
+        conn.execute(
+            text(
+                f"""
+                CREATE TABLE {STAGING_TABLE} (
+                    id SERIAL PRIMARY KEY,
+                    date DATE NOT NULL,
+                    geo_code VARCHAR(10) NOT NULL,
+                    citizen_code VARCHAR(10) NOT NULL,
+                    applicant_type VARCHAR(50) NOT NULL,
+                    total_applications INTEGER,
+                    extraction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"""
+                CREATE UNIQUE INDEX idx_{STAGING_TABLE}_unique
+                ON {STAGING_TABLE} (date, geo_code, citizen_code, applicant_type)
+                """
+            )
+        )
+    logging.info(f"Staging table {STAGING_TABLE} prepared.")
+
+
+def promote_staging_to_production():
+    """Atomically replace asylum_data with the freshly loaded staging data.
+
+    Runs the swap inside a single transaction so a crash mid-swap rolls back
+    and leaves the existing production table untouched. This replaces the
+    previous behavior where ``TRUNCATE asylum_data`` ran before the inserts,
+    leaving the table empty if the harvest failed afterwards.
+    """
+    engine = get_db_engine()
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE TABLE asylum_data"))
+        conn.execute(
+            text(
+                f"""
+                INSERT INTO asylum_data
+                    (date, geo_code, citizen_code, applicant_type, total_applications, extraction_date)
+                SELECT date, geo_code, citizen_code, applicant_type, total_applications, extraction_date
+                FROM {STAGING_TABLE}
+                """
+            )
+        )
+        conn.execute(text(f"DROP TABLE {STAGING_TABLE}"))
+    logging.info("✅ Staging promoted to asylum_data atomically.")
+
+
+def save_to_db(df):
+    """Write a chunk into the staging table with summing-UPSERT semantics.
+
+    Multiple chunks may contain rows for the same (date, geo, citizen,
+    applicant) tuple because the source TSV is split positionally; we sum
+    them so the staging table ends up with the full per-key total before
+    promotion.
     """
     if df.empty:
         logging.info("No data to save")
         return
 
-    logging.info(f"Saving {len(df)} records to database (UPSERT mode)...")
+    logging.info(f"Saving {len(df)} records to staging table...")
 
     engine = get_db_engine()
 
-    # Utiliser une insertion avec ON CONFLICT DO UPDATE pour sommer les valeurs
     with engine.begin() as conn:
         for _, row in df.iterrows():
             conn.execute(
-                text("""
-                INSERT INTO asylum_data (date, geo_code, citizen_code, applicant_type, total_applications)
-                VALUES (:date, :geo_code, :citizen_code, :applicant_type, :total_applications)
-                ON CONFLICT (date, geo_code, citizen_code, applicant_type) 
-                DO UPDATE SET total_applications = asylum_data.total_applications + EXCLUDED.total_applications
-            """),
+                text(
+                    f"""
+                    INSERT INTO {STAGING_TABLE} (date, geo_code, citizen_code, applicant_type, total_applications)
+                    VALUES (:date, :geo_code, :citizen_code, :applicant_type, :total_applications)
+                    ON CONFLICT (date, geo_code, citizen_code, applicant_type)
+                    DO UPDATE SET total_applications = {STAGING_TABLE}.total_applications + EXCLUDED.total_applications
+                    """
+                ),
                 {
                     "date": row["date"],
                     "geo_code": row["geo_code"],
@@ -374,7 +471,7 @@ def save_to_db(df):
                 },
             )
 
-    logging.info("✅ Data saved successfully")
+    logging.info("✅ Chunk saved to staging")
 
 
 def run_harvest():
@@ -411,21 +508,21 @@ def run_harvest():
         # 1. Télécharger le TSV
         tsv_content = download_eurostat_tsv(url)
 
-        # 1.5 Truncate table (mimic replace)
-        engine = get_db_engine()
-        with engine.connect() as conn:
-            conn.execute(text("TRUNCATE TABLE asylum_data"))
-            conn.commit()
-            logging.info("Table asylum_data truncated.")
+        # 1.5 Préparer la table de staging (vide). asylum_data n'est PAS touchée.
+        reset_staging_table()
 
-        # 2. Parser et Sauvegarder en chunks
+        # 2. Parser et Sauvegarder en chunks dans la staging
         process_and_save_chunked(tsv_content)
+
+        # 2.5 Swap atomique staging -> asylum_data
+        promote_staging_to_production()
 
         # 3. Update Last-Modified
         if remote_last_mod:
             update_local_last_modified(remote_last_mod)
             logging.info(f"Updated local Last-Modified to: {remote_last_mod}")
 
+        _touch_health_file()
         logging.info("=" * 60)
         logging.info("✅ HARVEST COMPLETED SUCCESSFULLY")
         logging.info("=" * 60)
@@ -435,18 +532,44 @@ def run_harvest():
         raise
 
 
-if __name__ == "__main__":
-    # Health check mode
-    import sys
+_shutdown = False
 
+
+def _request_shutdown(signum, _frame):
+    global _shutdown
+    logging.info(f"Received signal {signum}, shutting down after current cycle.")
+    _shutdown = True
+
+
+if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--healthcheck":
-        sys.exit(0)
+        sys.exit(_run_healthcheck())
+
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+
+    # Mark the container as healthy on startup so the initial harvest (which
+    # may take several minutes) doesn't trigger a false-positive unhealthy state.
+    _touch_health_file()
 
     # Run harvest immediately on startup
     run_harvest()
 
-    # Then start scheduler for daily runs
-    logging.info("Scheduler started. Next run in 24 hours...")
-    while True:
-        time.sleep(86400)  # 24 hours
-        run_harvest()
+    # Then re-run on a daily cadence with a sleep loop that respects SIGTERM.
+    logging.info("Scheduler started. Next run in ~24h.")
+    while not _shutdown:
+        # Sleep in small slices so SIGTERM is acknowledged within seconds.
+        for _ in range(86400):
+            if _shutdown:
+                break
+            time.sleep(1)
+        if _shutdown:
+            break
+        try:
+            run_harvest()
+        except Exception:
+            # Logged inside run_harvest; rely on docker restart policy and
+            # health file staleness rather than crashing the whole process.
+            pass
+
+    logging.info("Harvester exited cleanly.")
