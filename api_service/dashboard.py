@@ -12,6 +12,8 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
+from api_service.i18n import country_name, language_selector, t
+
 # Configuration
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 API_KEY = os.getenv("API_KEY") or None
@@ -172,37 +174,8 @@ def get_history(geo_code: str):
         return pd.DataFrame()
 
 
-# Country name mapping
-COUNTRY_NAMES = {
-    "AT": "Austria",
-    "BE": "Belgium",
-    "BG": "Bulgaria",
-    "CY": "Cyprus",
-    "CZ": "Czechia",
-    "DE": "Germany",
-    "DK": "Denmark",
-    "EE": "Estonia",
-    "ES": "Spain",
-    "FI": "Finland",
-    "FR": "France",
-    "GR": "Greece",
-    "EL": "Greece",
-    "HR": "Croatia",
-    "HU": "Hungary",
-    "IE": "Ireland",
-    "IT": "Italy",
-    "LT": "Lithuania",
-    "LU": "Luxembourg",
-    "LV": "Latvia",
-    "MT": "Malta",
-    "NL": "Netherlands",
-    "PL": "Poland",
-    "PT": "Portugal",
-    "RO": "Romania",
-    "SE": "Sweden",
-    "SI": "Slovenia",
-    "SK": "Slovakia",
-}
+# Country names are localised via api_service.i18n.country_name(); see
+# api_service/locales/*.toml for the per-language tables.
 
 # ISO-2 to ISO-3 mapping for Plotly
 ISO_MAP = {
@@ -236,19 +209,22 @@ ISO_MAP = {
     "SK": "SVK",
 }
 
+# --- Language selector (top of page, right-aligned) ---
+language_selector()
+
 # --- Header ---
 st.markdown(
-    """
+    f"""
 <div class="dashboard-header">
     <div style="display: flex; align-items: center; justify-content: space-between;">
         <div>
-            <h1 class="dashboard-title">EU Border Risk Profiler</h1>
-            <p class="dashboard-subtitle">Monitoring and Forecasting Asylum Application Trends across the European Union</p>
+            <h1 class="dashboard-title">{t("header.title")}</h1>
+            <p class="dashboard-subtitle">{t("header.subtitle")}</p>
         </div>
         <div style="text-align: right;">
             <div style="background: rgba(255,255,255,0.1); padding: 0.5rem 1rem; border-radius: 8px;">
-                <span style="color: #cbd5e1; font-size: 0.9rem;">System Status</span><br>
-                <span style="color: #4ade80; font-weight: 600;">● Operational</span>
+                <span style="color: #cbd5e1; font-size: 0.9rem;">{t("header.status_label")}</span><br>
+                <span style="color: #4ade80; font-weight: 600;">● {t("header.status_value")}</span>
             </div>
         </div>
     </div>
@@ -311,7 +287,7 @@ if valid_data:
         st.markdown(
             f"""
         <div class="metric-card">
-            <div class="metric-label">EU Avg Risk Index</div>
+            <div class="metric-label">{t("kpi.avg_risk")}</div>
             <div class="metric-value">{avg_risk:.1f}</div>
         </div>
         """,
@@ -322,7 +298,7 @@ if valid_data:
         st.markdown(
             f"""
         <div class="metric-card">
-            <div class="metric-label">Max Risk Index</div>
+            <div class="metric-label">{t("kpi.max_risk")}</div>
             <div class="metric-value" style="color: #dc2626;">{max_risk:.1f}</div>
         </div>
         """,
@@ -333,8 +309,8 @@ if valid_data:
         st.markdown(
             f"""
         <div class="metric-card">
-            <div class="metric-label">High Risk Hotspot</div>
-            <div class="metric-value">{COUNTRY_NAMES.get(max_risk_country, max_risk_country)}</div>
+            <div class="metric-label">{t("kpi.hotspot")}</div>
+            <div class="metric-value">{country_name(max_risk_country)}</div>
         </div>
         """,
             unsafe_allow_html=True,
@@ -344,7 +320,7 @@ if valid_data:
         st.markdown(
             f"""
         <div class="metric-card">
-            <div class="metric-label">Monitored Countries</div>
+            <div class="metric-label">{t("kpi.monitored")}</div>
             <div class="metric-value">{total_countries}</div>
         </div>
         """,
@@ -357,12 +333,15 @@ if valid_data:
 col_map, col_ranking = st.columns([2, 1])
 
 with col_map:
-    st.markdown('<div class="section-header"><span>🌍</span> Risk Heatmap (Forecast)</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="section-header"><span>🌍</span> {t("section.heatmap")}</div>',
+        unsafe_allow_html=True,
+    )
 
     if valid_data:
         # Map to ISO-3 codes
         df_map["iso_alpha"] = df_map["geo_code"].map(ISO_MAP)
-        df_map["country_name"] = df_map["geo_code"].map(COUNTRY_NAMES)
+        df_map["country_name"] = df_map["geo_code"].map(country_name)
 
         # Create choropleth
         fig = px.choropleth(
@@ -382,7 +361,7 @@ with col_map:
             range_color=[0, 100],  # Force scale 0-100 for consistency
             hover_name="country_name",
             hover_data={"iso_alpha": False, "risk_score": ":.1f", "geo_code": False},
-            labels={"risk_score": "Risk Score"},
+            labels={"risk_score": t("map.risk_label")},
         )
 
         # Update layout for polished look
@@ -422,16 +401,19 @@ with col_map:
         with st.container():
             st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("⏳ System initializing... Waiting for prediction data.")
+        st.info(t("map.initializing"))
 
 with col_ranking:
-    st.markdown('<div class="section-header"><span>🏆</span> Risk Ranking</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="section-header"><span>🏆</span> {t("section.ranking")}</div>',
+        unsafe_allow_html=True,
+    )
 
     if valid_data:
         # Sort by risk score
         ranking = df_map[["geo_code", "risk_score"]].copy()
         ranking = ranking.sort_values("risk_score", ascending=False)
-        ranking["Country"] = ranking["geo_code"].map(COUNTRY_NAMES)
+        ranking["Country"] = ranking["geo_code"].map(country_name)
         ranking = ranking.reset_index(drop=True)
         ranking.columns = ["Code", "Score", "Country"]
 
@@ -446,9 +428,9 @@ with col_ranking:
             use_container_width=True,
             height=550,
             column_config={
-                "Country": st.column_config.TextColumn("Country", width="medium"),
+                "Country": st.column_config.TextColumn(t("ranking.country"), width="medium"),
                 "Score": st.column_config.ProgressColumn(
-                    "Risk Index",
+                    t("ranking.risk_index"),
                     format="%.1f",
                     min_value=0,
                     max_value=100,
@@ -456,21 +438,26 @@ with col_ranking:
             },
         )
     else:
-        st.info("No data available.")
+        st.info(t("ranking.no_data"))
 
 # --- Country Analysis Section ---
 st.markdown("<br>", unsafe_allow_html=True)
-st.markdown('<div class="section-header"><span>📈</span> Deep Dive Analysis</div>', unsafe_allow_html=True)
+st.markdown(
+    f'<div class="section-header"><span>📈</span> {t("section.deep_dive")}</div>',
+    unsafe_allow_html=True,
+)
 
 if valid_data:
     # Dropdown
     countries = sorted(df_map["geo_code"].unique())
-    country_options = {code: f"{COUNTRY_NAMES.get(code, code)} ({code})" for code in countries}
+    country_options = {code: f"{country_name(code)} ({code})" for code in countries}
 
     col_select, col_empty = st.columns([1, 2])
     with col_select:
         selected_code = st.selectbox(
-            "Select Country", options=countries, format_func=lambda x: country_options.get(x, x)
+            t("deep_dive.select_label"),
+            options=countries,
+            format_func=lambda x: country_options.get(x, x),
         )
 
     if selected_code:
@@ -499,7 +486,7 @@ if valid_data:
                 )
 
                 fig_line.update_layout(
-                    title="Volume History (Applications)",
+                    title=t("deep_dive.chart_title"),
                     xaxis_title="",
                     yaxis_title="",
                     hovermode="x unified",
@@ -513,7 +500,7 @@ if valid_data:
 
                 st.plotly_chart(fig_line, use_container_width=True)
             else:
-                st.warning("No historical data available.")
+                st.warning(t("deep_dive.no_history"))
 
         with col_stats:
             # Show specific stats for this country
@@ -521,10 +508,10 @@ if valid_data:
             st.markdown(
                 f"""
             <div class="metric-card">
-                <div class="metric-label">Current Risk Index</div>
+                <div class="metric-label">{t("deep_dive.current_label")}</div>
                 <div class="metric-value">{row["risk_score"]:.1f}</div>
                 <div style="color: #64748b; font-size: 0.9rem; margin-top:0.5rem;">
-                    Assessment based on data up to {row["date"].strftime("%b %Y")}
+                    {t("deep_dive.assessment_prefix")} {row["date"].strftime("%b %Y")}
                 </div>
             </div>
             """,
@@ -532,76 +519,26 @@ if valid_data:
             )
 
             st.markdown("<br>", unsafe_allow_html=True)
-            st.info("""
-            **Analysis Note:**
-            Risk score is calculated based on volume relative to global historical peaks (Log Scale) and recent trend variations.
-            """)
+            st.info(f"**{t('deep_dive.note_title')}**\n\n{t('deep_dive.note_body')}")
 
 # --- About this data ---
 st.markdown("<br><br>", unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-header"><span>ℹ️</span> About this data</div>',
+    f'<div class="section-header"><span>ℹ️</span> {t("section.about")}</div>',
     unsafe_allow_html=True,
 )
 
-with st.expander("Source, methodology, intended use, and known limitations", expanded=False):
-    st.markdown(
-        """
-**Source.** Monthly first-time asylum applications published by **Eurostat**
-under dataset code [`migr_asyappctzm`](https://ec.europa.eu/eurostat/databrowser/view/migr_asyappctzm/default/table)
-("*Asylum applicants by type, citizenship, age and sex — monthly data*").
-The dataset is updated monthly with a typical reporting lag of **one to
-two months**; recent months may be revised when Member States submit
-corrections. The data is aggregated to the (date, destination Member
-State) level by this project before any modelling.
-
-**What the score means.** The **Risk Index** shown here is a 0-100
-indicator of *administrative pressure* on a Member State's first-time
-asylum procedure for a given month, derived as
-`vol_norm × (1 + variation) × 100`, where `vol_norm` is the volume
-log-normalised against the all-time EU peak and `variation` is the
-month-over-month change. A 27-country Random Forest forecasts the
-score for the next three months. See
-[Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md).
-
-**Intended use.** Operational situational awareness for migration
-policy analysts. The score helps surface Member States where
-short-term administrative pressure is likely to rise.
-
-**Out-of-scope use.** This dashboard **must not** inform decisions
-concerning individual asylum applicants, automated allocation between
-Member States, or any border-policing action. The score reflects
-administrative pressure on a Member State, not a judgement on the
-people applying.
-
-**Known limitations.** Reporting lag means the most recent month is
-often understated and the predictor automatically drops a country's
-last month if it would otherwise read as zero. Citizenship is
-currently aggregated to `TOTAL` — per-nationality breakdowns are on
-the roadmap. Forecasts at M+2 and M+3 are autoregressive and inherit
-M+1's error.
-
-**Citation.**
-> Eurostat. *Asylum applicants by type, citizenship, age and sex —
-> monthly data* (online data code: `migr_asyappctzm`).
-> Accessed via the EU Border Risk Profiler.
-
-**Further reading.**
-[Data Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/DATA_CARD.md) ·
-[Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md) ·
-[Architecture Decision Records](https://github.com/LibreArbitre/eu-border-risk-profiler/tree/main/docs/adr) ·
-[Security posture](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/SECURITY.md)
-        """
-    )
+with st.expander(t("about.expander"), expanded=False):
+    st.markdown(t("about.body"))
 
 # --- Footer ---
 st.markdown("<br><br><hr>", unsafe_allow_html=True)
 st.markdown(
-    """
+    f"""
 <div style="text-align: center; color: #94a3b8; font-size: 0.8rem; padding: 2rem;">
-    <strong>EU Border Risk Profiler v2.0</strong><br>
-    Data Source: Eurostat (migr_asyappctzm) • Last Update: {}
+    <strong>{t("footer.version")}</strong><br>
+    {t("footer.last_update", code="migr_asyappctzm", date=datetime.now().strftime("%d %b %Y"))}
 </div>
-""".format(datetime.now().strftime("%d %b %Y")),
+""",
     unsafe_allow_html=True,
 )

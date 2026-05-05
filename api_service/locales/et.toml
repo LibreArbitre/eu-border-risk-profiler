@@ -1,0 +1,126 @@
+[meta]
+name = "Eesti"
+
+[selector]
+label = "Keel"
+
+[page]
+title = "ELi Piiririski Profiiler"
+
+[header]
+title = "ELi Piiririski Profiiler"
+subtitle = "Varjupaigataotluste trendide jälgimine ja prognoosimine kogu Euroopa Liidus"
+status_label = "Süsteemi olek"
+status_value = "Töötab"
+
+[kpi]
+avg_risk = "ELi keskmine riskiindeks"
+max_risk = "Suurim riskiindeks"
+hotspot = "Kõrgeima riskiga riik"
+monitored = "Jälgitavate riikide arv"
+
+[section]
+heatmap = "Riski soojuskaart (prognoos)"
+ranking = "Riski edetabel"
+deep_dive = "Detailne analüüs"
+about = "Andmete kohta"
+
+[map]
+risk_label = "Riskiskoor"
+initializing = "⏳ Süsteem käivitub… ootan prognoosiandmeid."
+
+[ranking]
+country = "Riik"
+risk_index = "Riskiindeks"
+no_data = "Andmeid pole."
+
+[deep_dive]
+select_label = "Vali riik"
+chart_title = "Taotluste maht ajas"
+no_history = "Ajaloolised andmed puuduvad."
+current_label = "Praegune riskiindeks"
+assessment_prefix = "Hinnang andmete põhjal kuni"
+note_title = "Märkus analüüsi kohta"
+note_body = "Riskiskoor ühendab logaritmiliselt ELi tipphetkega normaliseeritud mahu ja kõige värskema kuust-kuusse muutuse."
+
+[about]
+expander = "Allikas, metoodika, kasutusotstarve ja teadaolevad piirangud"
+body = """
+**Allikas.** Esmakordsed varjupaigataotlused, mille avaldab **Eurostat**
+andmestiku kood [`migr_asyappctzm`](https://ec.europa.eu/eurostat/databrowser/view/migr_asyappctzm/default/table)
+all („*Asylum applicants by type, citizenship, age and sex — monthly data*“).
+Andmestik uueneb iga kuu, tüüpiline avaldamise viivitus on **üks kuni
+kaks kuud**; värskeid kuid võidakse hiljem korrigeerida, kui
+liikmesriigid esitavad parandusi. Selles projektis agregeeritakse
+andmed tasemele (kuupäev, sihtliikmesriik) enne mistahes modelleerimist.
+
+**Mida skoor tähendab.** **Riskiindeks** on 0–100 näitaja, mis
+kirjeldab *halduskoormust* liikmesriigi esmakordsete taotluste
+menetluses antud kuul. Valem on
+`vol_norm × (1 + variation) × 100`, kus `vol_norm` on logaritmiliselt
+ELi ajaloolise tippväärtusega normaliseeritud maht ja `variation` on
+kuust-kuusse muutus. 27 riigi kohta treenitud Random Forest prognoosib
+skoori kolm kuud ette. Vt
+[Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md).
+
+**Kasutusotstarve.** Operatiivne olukorrateadlikkus rändepoliitika
+analüütikutele. Skoor aitab tuvastada liikmesriike, kus lähikuudel võib
+halduskoormus tõusta.
+
+**Mida selle dashboard'iga teha ei tohi.** Skoori **ei tohi** kasutada
+otsuste tegemiseks üksikute taotlejate kohta, taotlejate automaatseks
+jaotamiseks liikmesriikide vahel ega ühegi piirikontrolli toiminguga
+seotud otsuse alusena. Skoor peegeldab halduskoormust liikmesriigile,
+mitte hinnangut taotlejatele endile.
+
+**Teadaolevad piirangud.** Avaldamise viivituse tõttu on värskeim kuu
+sageli alaregistreeritud, ja prognoosimudel jätab riigi viimase kuu
+välja, kui see oleks muidu null. Kodakondsus on praegu agregeeritud
+väärtusele `TOTAL` — riigi-täpsusega jaotus on plaanis. Prognoosid M+2
+ja M+3 on autoregressiivsed ja pärivad M+1 vea.
+
+**Tsiteerimine.**
+> Eurostat. *Asylum applicants by type, citizenship, age and sex —
+> monthly data* (andmestiku kood: `migr_asyappctzm`).
+> Vahendatud ELi Piiririski Profiileri kaudu.
+
+**Lisalugemine.**
+[Data Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/DATA_CARD.md) ·
+[Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md) ·
+[Architecture Decision Records](https://github.com/LibreArbitre/eu-border-risk-profiler/tree/main/docs/adr) ·
+[Turvaülevaade](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/SECURITY.md)
+"""
+
+[footer]
+version = "ELi Piiririski Profiiler v2.0"
+last_update = "Andmeallikas: Eurostat ({code}) • Viimane uuendus: {date}"
+
+[countries]
+AT = "Austria"
+BE = "Belgia"
+BG = "Bulgaaria"
+CY = "Küpros"
+CZ = "Tšehhi"
+DE = "Saksamaa"
+DK = "Taani"
+EE = "Eesti"
+EL = "Kreeka"
+ES = "Hispaania"
+FI = "Soome"
+FR = "Prantsusmaa"
+GR = "Kreeka"
+HR = "Horvaatia"
+HU = "Ungari"
+IE = "Iirimaa"
+IT = "Itaalia"
+LT = "Leedu"
+LU = "Luksemburg"
+LV = "Läti"
+MT = "Malta"
+NL = "Madalmaad"
+PL = "Poola"
+PT = "Portugal"
+RO = "Rumeenia"
+SE = "Rootsi"
+SI = "Sloveenia"
+SK = "Slovakkia"

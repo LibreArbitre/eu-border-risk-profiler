@@ -1,0 +1,127 @@
+[meta]
+name = "English"
+
+[selector]
+label = "Language"
+
+[page]
+title = "EU Border Risk Profiler"
+
+[header]
+title = "EU Border Risk Profiler"
+subtitle = "Monitoring and forecasting asylum application trends across the European Union"
+status_label = "System Status"
+status_value = "Operational"
+
+[kpi]
+avg_risk = "EU Avg Risk Index"
+max_risk = "Max Risk Index"
+hotspot = "High Risk Hotspot"
+monitored = "Monitored Countries"
+
+[section]
+heatmap = "Risk Heatmap (forecast)"
+ranking = "Risk Ranking"
+deep_dive = "Deep Dive Analysis"
+about = "About this data"
+
+[map]
+risk_label = "Risk Score"
+initializing = "⏳ System initializing… waiting for prediction data."
+
+[ranking]
+country = "Country"
+risk_index = "Risk Index"
+no_data = "No data available."
+
+[deep_dive]
+select_label = "Select country"
+chart_title = "Volume history (applications)"
+no_history = "No historical data available."
+current_label = "Current Risk Index"
+assessment_prefix = "Assessment based on data up to"
+note_title = "Analysis note"
+note_body = "The Risk Score combines volume — log-normalised against the all-time EU peak — with the most recent month-over-month variation."
+
+[about]
+expander = "Source, methodology, intended use and known limitations"
+body = """
+**Source.** Monthly first-time asylum applications published by **Eurostat**
+under dataset code [`migr_asyappctzm`](https://ec.europa.eu/eurostat/databrowser/view/migr_asyappctzm/default/table)
+("*Asylum applicants by type, citizenship, age and sex — monthly data*").
+The dataset is updated monthly with a typical reporting lag of **one to
+two months**; recent months may be revised when Member States submit
+corrections. The data is aggregated to the (date, destination Member
+State) level by this project before any modelling.
+
+**What the score means.** The **Risk Index** is a 0-100 indicator of
+*administrative pressure* on a Member State's first-time asylum
+procedure for a given month, derived as
+`vol_norm × (1 + variation) × 100`, where `vol_norm` is the volume
+log-normalised against the all-time EU peak and `variation` is the
+month-over-month change. A 27-country Random Forest forecasts the
+score for the next three months. See the
+[Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md).
+
+**Intended use.** Operational situational awareness for migration
+policy analysts. The score helps surface Member States where
+short-term administrative pressure is likely to rise.
+
+**Out-of-scope use.** This dashboard **must not** inform decisions
+concerning individual asylum applicants, automated allocation between
+Member States, or any border-policing action. The score reflects
+administrative pressure on a Member State, not a judgement on the
+people applying.
+
+**Known limitations.** Reporting lag means the most recent month is
+often understated and the predictor automatically drops a country's
+last month if it would otherwise read as zero. Citizenship is
+currently aggregated to `TOTAL` — per-nationality breakdowns are on
+the roadmap. Forecasts at M+2 and M+3 are autoregressive and inherit
+M+1's error.
+
+**Citation.**
+> Eurostat. *Asylum applicants by type, citizenship, age and sex —
+> monthly data* (online data code: `migr_asyappctzm`).
+> Accessed via the EU Border Risk Profiler.
+
+**Further reading.**
+[Data Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/DATA_CARD.md) ·
+[Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md) ·
+[Architecture Decision Records](https://github.com/LibreArbitre/eu-border-risk-profiler/tree/main/docs/adr) ·
+[Security posture](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/SECURITY.md)
+"""
+
+[footer]
+version = "EU Border Risk Profiler v2.0"
+last_update = "Data source: Eurostat ({code}) • Last update: {date}"
+
+[countries]
+AT = "Austria"
+BE = "Belgium"
+BG = "Bulgaria"
+CY = "Cyprus"
+CZ = "Czechia"
+DE = "Germany"
+DK = "Denmark"
+EE = "Estonia"
+EL = "Greece"
+ES = "Spain"
+FI = "Finland"
+FR = "France"
+GR = "Greece"
+HR = "Croatia"
+HU = "Hungary"
+IE = "Ireland"
+IT = "Italy"
+LT = "Lithuania"
+LU = "Luxembourg"
+LV = "Latvia"
+MT = "Malta"
+NL = "Netherlands"
+PL = "Poland"
+PT = "Portugal"
+RO = "Romania"
+SE = "Sweden"
+SI = "Slovenia"
+SK = "Slovakia"

@@ -1,0 +1,132 @@
+[meta]
+name = "Français"
+
+[selector]
+label = "Langue"
+
+[page]
+title = "Profileur de risque migratoire UE"
+
+[header]
+title = "Profileur de risque migratoire UE"
+subtitle = "Suivi et prévision des tendances de demandes d'asile dans l'Union européenne"
+status_label = "État du système"
+status_value = "Opérationnel"
+
+[kpi]
+avg_risk = "Indice de risque moyen UE"
+max_risk = "Indice de risque maximal"
+hotspot = "Pays le plus exposé"
+monitored = "Pays suivis"
+
+[section]
+heatmap = "Carte de chaleur du risque (prévision)"
+ranking = "Classement par risque"
+deep_dive = "Analyse approfondie"
+about = "À propos des données"
+
+[map]
+risk_label = "Score de risque"
+initializing = "⏳ Initialisation… en attente des données de prévision."
+
+[ranking]
+country = "Pays"
+risk_index = "Indice de risque"
+no_data = "Pas de données disponibles."
+
+[deep_dive]
+select_label = "Sélectionner un pays"
+chart_title = "Historique des demandes"
+no_history = "Pas de données historiques."
+current_label = "Indice de risque actuel"
+assessment_prefix = "Évaluation basée sur les données jusqu'à"
+note_title = "Note méthodologique"
+note_body = "Le score de risque combine le volume — log-normalisé contre le pic historique de l'UE — et la variation mois-sur-mois la plus récente."
+
+[about]
+expander = "Source, méthodologie, usage prévu et limitations connues"
+body = """
+**Source.** Demandes d'asile mensuelles déposées pour la première fois,
+publiées par **Eurostat** sous le code dataset
+[`migr_asyappctzm`](https://ec.europa.eu/eurostat/databrowser/view/migr_asyappctzm/default/table)
+(« *Asylum applicants by type, citizenship, age and sex — monthly
+data* »). Le dataset est mis à jour tous les mois avec un délai
+typique de **un à deux mois** ; les mois récents peuvent être
+révisés lorsque les États membres soumettent des corrections. Les
+données sont agrégées au niveau (date, État membre de destination)
+avant toute modélisation.
+
+**Ce que représente le score.** L'**indice de risque** est un
+indicateur 0-100 de la *pression administrative* exercée sur la
+procédure d'asile d'un État membre pour un mois donné, calculé comme
+`vol_norm × (1 + variation) × 100`, où `vol_norm` est le volume
+log-normalisé contre le pic historique de l'UE et `variation` est la
+variation mois-sur-mois. Une forêt aléatoire à 27 modèles (un par
+État membre) prédit le score sur les trois mois suivants. Voir le
+[Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md).
+
+**Usage prévu.** Connaissance opérationnelle de la situation pour les
+analystes en politique migratoire. Le score aide à identifier les
+États membres où la pression administrative pourrait s'accroître à
+court terme.
+
+**Usage exclu.** Ce tableau de bord **ne doit pas** servir à informer
+de décisions concernant des demandeurs d'asile individuels, à
+l'allocation automatisée entre États membres, ou à toute action de
+contrôle aux frontières. Le score reflète une pression administrative
+sur un État membre, pas un jugement sur les personnes qui demandent
+l'asile.
+
+**Limitations connues.** Le délai de publication implique que le mois
+le plus récent est souvent sous-estimé ; le prédicteur écarte
+automatiquement le dernier mois d'un pays si ce mois est à zéro alors
+que le précédent était substantiel. La nationalité est actuellement
+agrégée à `TOTAL` — un découpage par nationalité est sur la feuille de
+route. Les prévisions M+2 et M+3 sont autorégressives et héritent de
+l'erreur de M+1.
+
+**Citation.**
+> Eurostat. *Asylum applicants by type, citizenship, age and sex —
+> monthly data* (code de dataset : `migr_asyappctzm`).
+> Consulté via l'EU Border Risk Profiler.
+
+**Pour aller plus loin.**
+[Data Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/DATA_CARD.md) ·
+[Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md) ·
+[Architecture Decision Records](https://github.com/LibreArbitre/eu-border-risk-profiler/tree/main/docs/adr) ·
+[Politique de sécurité](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/SECURITY.md)
+"""
+
+[footer]
+version = "EU Border Risk Profiler v2.0"
+last_update = "Source : Eurostat ({code}) • Dernière mise à jour : {date}"
+
+[countries]
+AT = "Autriche"
+BE = "Belgique"
+BG = "Bulgarie"
+CY = "Chypre"
+CZ = "Tchéquie"
+DE = "Allemagne"
+DK = "Danemark"
+EE = "Estonie"
+EL = "Grèce"
+ES = "Espagne"
+FI = "Finlande"
+FR = "France"
+GR = "Grèce"
+HR = "Croatie"
+HU = "Hongrie"
+IE = "Irlande"
+IT = "Italie"
+LT = "Lituanie"
+LU = "Luxembourg"
+LV = "Lettonie"
+MT = "Malte"
+NL = "Pays-Bas"
+PL = "Pologne"
+PT = "Portugal"
+RO = "Roumanie"
+SE = "Suède"
+SI = "Slovénie"
+SK = "Slovaquie"
