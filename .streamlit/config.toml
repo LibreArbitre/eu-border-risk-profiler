@@ -4,7 +4,7 @@ showErrorDetails = false
 [server]
 headless = true
 enableCORS = false
-enableXsrfProtection = false
+enableXsrfProtection = true
 
 [ui]
 hideTopBar = true

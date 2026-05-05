@@ -1,7 +1,6 @@
-pandas
-numpy
-psycopg2-binary
-SQLAlchemy
-scikit-learn
-schedule
-pytest
+pandas==2.3.3
+numpy==2.3.5
+psycopg2-binary==2.9.11
+SQLAlchemy==2.0.44
+scikit-learn==1.7.2
+schedule==1.2.2
