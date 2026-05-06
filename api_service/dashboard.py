@@ -174,6 +174,26 @@ def get_history(geo_code: str):
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=60)
+def get_history_by_citizen(geo_code: str, top: int = 5, since: str | None = None):
+    """Fetch top-N nationalities for a country."""
+    try:
+        params = {"top": top}
+        if since:
+            params["since"] = since
+        r = requests.get(
+            f"{API_URL}/api/v1/data/history/{geo_code}/by-citizen",
+            timeout=10,
+            headers=_API_HEADERS,
+            params=params,
+        )
+        if r.status_code == 200:
+            return pd.DataFrame(r.json())
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
 # Country names are localised via api_service.i18n.country_name(); see
 # api_service/locales/*.toml for the per-language tables.
 
@@ -535,6 +555,59 @@ if valid_data:
 
             st.markdown("<br>", unsafe_allow_html=True)
             st.info(f"**{t('deep_dive.note_title')}**\n\n{t('deep_dive.note_body')}")
+
+        # --- Per-nationality breakdown (top N) ---
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_title, col_slider = st.columns([3, 1])
+        with col_title:
+            st.markdown(
+                f'<div class="section-header"><span>🌐</span> {t("deep_dive.by_citizen_title")}</div>',
+                unsafe_allow_html=True,
+            )
+        with col_slider:
+            top_n = st.slider(
+                t("deep_dive.by_citizen_slider"),
+                min_value=3,
+                max_value=10,
+                value=5,
+                key=f"top_n_{selected_code}",
+            )
+
+        df_by_cit = get_history_by_citizen(selected_code, top=top_n)
+        if not df_by_cit.empty:
+            df_by_cit["date"] = pd.to_datetime(df_by_cit["date"])
+            df_by_cit = df_by_cit.sort_values(["date", "citizen_code"])
+
+            fig_cit = px.area(
+                df_by_cit,
+                x="date",
+                y="total",
+                color="citizen_code",
+                category_orders={
+                    "citizen_code": (
+                        df_by_cit.groupby("citizen_code")["total"]
+                        .sum()
+                        .sort_values(ascending=False)
+                        .index.tolist()
+                    )
+                },
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig_cit.update_layout(
+                title=t("deep_dive.by_citizen_chart_title"),
+                xaxis_title="",
+                yaxis_title="",
+                hovermode="x unified",
+                height=380,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(gridcolor="#f1f5f9"),
+                xaxis=dict(gridcolor="#f1f5f9"),
+                legend=dict(title=t("deep_dive.by_citizen_legend")),
+            )
+            st.plotly_chart(fig_cit, use_container_width=True)
+        else:
+            st.warning(t("deep_dive.by_citizen_no_data"))
 
 # --- About this data ---
 st.markdown("<br><br>", unsafe_allow_html=True)

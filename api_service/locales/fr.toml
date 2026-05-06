@@ -42,6 +42,11 @@ current_label = "Indice de risque actuel"
 assessment_prefix = "Évaluation basée sur les données jusqu'à"
 note_title = "Note méthodologique"
 note_body = "Le score de risque combine le volume — log-normalisé contre le pic historique de l'UE — et la variation mois-sur-mois la plus récente."
+by_citizen_title = "Principales nationalités"
+by_citizen_slider = "Top N"
+by_citizen_chart_title = "Demandes par nationalité (cumulé)"
+by_citizen_legend = "Nationalité"
+by_citizen_no_data = "Aucune ventilation par nationalité disponible pour ce pays — attendez le prochain cycle du harvester."
 
 [about]
 expander = "Source, méthodologie, usage prévu et limitations connues"

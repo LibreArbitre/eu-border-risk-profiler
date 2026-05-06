@@ -42,6 +42,11 @@ current_label = "Current Risk Index"
 assessment_prefix = "Assessment based on data up to"
 note_title = "Analysis note"
 note_body = "The Risk Score combines volume — log-normalised against the all-time EU peak — with the most recent month-over-month variation."
+by_citizen_title = "Top nationalities"
+by_citizen_slider = "Top N"
+by_citizen_chart_title = "Applications by nationality (cumulative)"
+by_citizen_legend = "Nationality"
+by_citizen_no_data = "No per-nationality breakdown available for this country yet — wait for the next harvester cycle."
 
 [about]
 expander = "Source, methodology, intended use and known limitations"

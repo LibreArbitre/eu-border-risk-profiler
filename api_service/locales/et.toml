@@ -42,6 +42,11 @@ current_label = "Praegune riskiindeks"
 assessment_prefix = "Hinnang andmete põhjal kuni"
 note_title = "Märkus analüüsi kohta"
 note_body = "Riskiskoor ühendab logaritmiliselt ELi tipphetkega normaliseeritud mahu ja kõige värskema kuust-kuusse muutuse."
+by_citizen_title = "Peamised kodakondsused"
+by_citizen_slider = "Top N"
+by_citizen_chart_title = "Taotlused kodakondsuse järgi (kumulatiivne)"
+by_citizen_legend = "Kodakondsus"
+by_citizen_no_data = "Selle riigi kohta pole veel kodakondsuste lõikes andmeid — oota harvesteri järgmist tsüklit."
 
 [about]
 expander = "Allikas, metoodika, kasutusotstarve ja teadaolevad piirangud"

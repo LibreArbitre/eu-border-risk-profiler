@@ -11,7 +11,9 @@ The **EU Border Risk Profiler** is a specialized intelligence system designed to
 *   **Advanced Risk Scoring**: Uses a logarithmic global normalization formula to identify high-risk zones without being skewed by historical outliers (e.g., the 2015 crisis).
     *   `Risk = (log(Volume) / log(Global_Max)) * (1 + Trend_Variation)`
 *   **Smart Data Handling**: Automatically handles data lags to ensure the heatmap always reflects the *latest valid* intelligence per country, preventing misleading "zero risk" zones due to reporting delays.
-*   **Predictive Modeling**: Trains lightweight Random Forest regressors for each of the 27 EU countries to forecast pressure 3 months ahead.
+*   **Predictive Modeling**: Trains lightweight Random Forest regressors for each of the 27 EU countries to forecast pressure 3 months ahead, with P10/P90 confidence intervals derived from the per-tree distribution.
+*   **Per-Nationality Drill-Down**: Each country page shows the top-N source nationalities over time, with a configurable N (3-10).
+*   **Multilingual Dashboard**: Available in English, Estonian and French, with country names localised. Selector at the top right or via a `?lang=` URL parameter.
 *   **Modern Dashboard**: A "Situation Room" style interface built with Streamlit, featuring dynamic heatmaps, risk rankings, and country-level deep dives.
 
 ## System Architecture

@@ -13,7 +13,11 @@
 
 * **Tark andmetöötlus**: Käsitleb automaatselt andmeviivitusi, tagades, et soojuskaart kajastab alati *uusimaid kehtivaid* riiklikke andmeid ning väldib eksitavaid „nullriski“ alasid raportite hilinemise tõttu.
 
-* **Prognoosimudelid**: Treenib iga ELi 27 liikmesriigi jaoks kergekaalulised Random Forest’i regressioonimudelid, et prognoosida survet 3 kuud ette.
+* **Prognoosimudelid**: Treenib iga ELi 27 liikmesriigi jaoks kergekaalulised Random Forest’i regressioonimudelid, et prognoosida survet 3 kuud ette. Iga prognoos sisaldab ka P10/P90 usaldusvahemikku, mis tuletatakse mudeli sisemiste otsustuspuude jaotusest.
+
+* **Detailvaade kodakondsuste lõikes**: Iga riigi vaatel kuvatakse N enim taotlejate päritoluriiki ajateljel (N on valitav vahemikus 3-10).
+
+* **Mitmekeelne kasutajaliides**: Saadaval inglise, eesti ja prantsuse keeles, riikide nimed on lokaliseeritud. Keelevalija on lehe paremas ülaosas või URL-i parameetris `?lang=`.
 
 * **Moodne juhtimisdashboard**: Streamliti baasil loodud „Situation Room“ stiilis liides, mille funktsioonide hulka kuuluvad dünaamilised soojuskaardid, riskihinnangute edetabelid ja riigipõhised detailvaated.
 
