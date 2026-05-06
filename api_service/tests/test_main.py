@@ -132,3 +132,22 @@ def test_require_api_key_rejects_invalid(main_module, monkeypatch):
 def test_require_api_key_accepts_match(main_module, monkeypatch):
     monkeypatch.setattr(main_module, "API_KEY", "secret-token")
     main_module.require_api_key(x_api_key="secret-token")
+
+
+def test_get_history_by_citizen_returns_404_when_no_rows(main_module, monkeypatch):
+    monkeypatch.setattr(main_module, "engine", FakeEngine([[]]))
+    with pytest.raises(main_module.HTTPException) as excinfo:
+        main_module.get_history_by_citizen(geo_code="FR", top=5, since=None)
+
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.detail == "No per-nationality history found"
+
+
+def test_get_history_by_citizen_returns_500_on_db_error(main_module, monkeypatch):
+    monkeypatch.setattr(
+        main_module, "engine", FakeEngine([RuntimeError("query exploded")])
+    )
+    with pytest.raises(main_module.HTTPException) as excinfo:
+        main_module.get_history_by_citizen(geo_code="FR", top=5, since=None)
+
+    assert excinfo.value.status_code == 500

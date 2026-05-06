@@ -5,7 +5,12 @@ from typing import Any, Dict, List, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from sqlalchemy import create_engine, text
 
-from api_service.models import CurrentRiskResponse, HistoryPoint, RiskPredictionResponse
+from api_service.models import (
+    CurrentRiskResponse,
+    HistoryByCitizenPoint,
+    HistoryPoint,
+    RiskPredictionResponse,
+)
 
 
 logging.basicConfig(
@@ -282,3 +287,83 @@ def get_history(geo_code: str):
     except Exception:
         logger.exception("Failed to fetch history", extra={"event": "history_error", "geo_code": geo_code})
         raise HTTPException(status_code=500, detail="Failed to fetch history")
+
+
+@app.get(
+    "/api/v1/data/history/{geo_code}/by-citizen",
+    response_model=List[HistoryByCitizenPoint],
+    dependencies=[Depends(require_api_key)],
+)
+def get_history_by_citizen(
+    geo_code: str,
+    top: int = Query(
+        5,
+        ge=1,
+        le=20,
+        description="Number of top nationalities to include, ranked by total volume.",
+    ),
+    since: Optional[str] = Query(
+        None,
+        description="Optional ISO date (YYYY-MM-DD) to clamp the time range from.",
+    ),
+):
+    """Top-N nationalities for a Member State, with their monthly time series.
+
+    Ranks the nationalities by total first-time applications over the
+    requested window (defaulting to the full history) and returns the
+    monthly counts for those nationalities only. The pre-aggregated
+    ``citizen_code = 'TOTAL'`` row is excluded from the ranking so
+    consumers don't see it among the breakdown.
+
+    The result is a flat list of ``(date, citizen_code, total)`` rows
+    suitable for direct ingestion by Plotly's stacked-area helpers.
+    """
+    query = text(
+        """
+        WITH top_citizens AS (
+            SELECT citizen_code
+            FROM asylum_data
+            WHERE geo_code = :geo
+              AND applicant_type = 'FRST'
+              AND citizen_code <> 'TOTAL'
+              AND (:since IS NULL OR date >= :since)
+            GROUP BY citizen_code
+            ORDER BY SUM(total_applications) DESC NULLS LAST
+            LIMIT :top
+        )
+        SELECT a.date, a.citizen_code, a.total_applications
+        FROM asylum_data a
+        INNER JOIN top_citizens tc ON tc.citizen_code = a.citizen_code
+        WHERE a.geo_code = :geo
+          AND a.applicant_type = 'FRST'
+          AND (:since IS NULL OR a.date >= :since)
+        ORDER BY a.date, a.citizen_code
+        """
+    )
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                query, {"geo": geo_code, "top": top, "since": since}
+            ).fetchall()
+        if not rows:
+            logger.warning(
+                "No per-nationality history found",
+                extra={"event": "history_by_citizen_not_found", "geo_code": geo_code},
+            )
+            raise HTTPException(status_code=404, detail="No per-nationality history found")
+        return [
+            {
+                "date": r.date,
+                "citizen_code": r.citizen_code,
+                "total": int(r.total_applications),
+            }
+            for r in rows
+        ]
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(
+            "Failed to fetch per-nationality history",
+            extra={"event": "history_by_citizen_error", "geo_code": geo_code},
+        )
+        raise HTTPException(status_code=500, detail="Failed to fetch per-nationality history")

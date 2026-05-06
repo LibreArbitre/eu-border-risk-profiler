@@ -28,6 +28,20 @@ class HistoryPoint(BaseModel):
     date: date
     total: int
 
+
+class HistoryByCitizenPoint(BaseModel):
+    """
+    Schema for one row of the per-nationality history feed.
+
+    The endpoint emits a flat list — one row per (date, citizen_code)
+    pair restricted to the top-N nationalities for the requested country.
+    Plotly's ``px.area`` consumes this shape directly via the ``color``
+    argument.
+    """
+    date: date
+    citizen_code: str
+    total: int
+
 class CurrentRiskResponse(BaseModel):
     """
     Schema for current/latest risk assessment with analysis.
