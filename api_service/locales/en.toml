@@ -4,6 +4,9 @@ name = "English"
 [selector]
 label = "Language"
 
+[common]
+source_label = "Source"
+
 [page]
 title = "EU Border Risk Profiler"
 
@@ -43,7 +46,7 @@ assessment_prefix = "Assessment based on data up to"
 note_title = "Analysis note"
 note_body = "The Risk Score combines volume — log-normalised against the all-time EU peak — with the most recent month-over-month variation."
 by_citizen_title = "Top nationalities"
-by_citizen_slider = "Top N"
+by_citizen_slider = "Number of nationalities to show"
 by_citizen_chart_title = "Applications by nationality (cumulative)"
 by_citizen_legend = "Nationality"
 by_citizen_no_data = "No per-nationality breakdown available for this country yet — wait for the next harvester cycle."
@@ -100,6 +103,8 @@ M+1's error.
 [footer]
 version = "EU Border Risk Profiler v2.0"
 last_update = "Data source: Eurostat ({code}) • Last update: {date}"
+github = "GitHub"
+api_docs = "API documentation"
 
 [countries]
 AT = "Austria"
