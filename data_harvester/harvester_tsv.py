@@ -245,64 +245,56 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
 
             dimensions.columns = ["freq", "unit", "citizen", "sex", "applicant", "age", "geo"]
 
-            # ==== OPTIMISATION CLEF: Filtrer AVANT le melt ====
-            # 1. Filtrer applicant == 'FRST'
+            # ==== Filtrage avant melt (économise mémoire et CPU) ====
+            # 1. Type de demandeur — first-time applicants only
             frst_mask = dimensions["applicant"] == "FRST"
-            # 2. Filtrer geo dans EU
+            # 2. Géographie — restreint à l'UE-27
             eu_mask = dimensions["geo"].isin(EU_COUNTRIES)
-            # Combiner les masques
-            valid_mask = frst_mask & eu_mask
+            # 3. Nationalité — on ne garde que les codes ISO-3166 alpha-2
+            #    (deux lettres majuscules), ce qui élimine les codes
+            #    pré-agrégés de Eurostat (TOTAL, EU27_2020, EXT_EU27_2020,
+            #    STLS, NAT, UNK, …). On dérive nous-mêmes la ligne TOTAL
+            #    plus bas afin d'avoir une définition unique et cohérente.
+            citizen_mask = dimensions["citizen"].str.match(r"^[A-Z]{2}$", na=False)
+            valid_mask = frst_mask & eu_mask & citizen_mask
 
             filtered_count = valid_mask.sum()
             if filtered_count == 0:
                 logging.info(f"Chunk {i + 1}: No valid rows after filter, skipping")
                 continue
 
-            logging.info(f"Chunk {i + 1}: Filtered to {filtered_count} rows (FRST + EU)")
+            logging.info(
+                f"Chunk {i + 1}: Filtered to {filtered_count} rows (FRST + EU + ISO-2 citizen)"
+            )
 
             # Appliquer le filtre au DataFrame original
             df_filtered = df[valid_mask].copy()
             dimensions_filtered = dimensions[valid_mask].copy()
 
-            # Reconstruire avec dimensions
+            # Reconstruire avec dimensions, citizen incluse cette fois pour
+            # exposer la ventilation par nationalité.
             df_filtered = pd.concat(
                 [
-                    dimensions_filtered[["geo", "applicant"]].reset_index(drop=True),
+                    dimensions_filtered[["geo", "citizen", "applicant"]].reset_index(drop=True),
                     df_filtered.drop(columns=[dimension_col]).reset_index(drop=True),
                 ],
                 axis=1,
             )
 
-            # ==== OPTIMISATION: Agréger par geo_code AVANT le melt ====
-            # Les colonnes de dates sont tout sauf 'geo' et 'applicant'
-            date_cols = [c for c in df_filtered.columns if c not in ["geo", "applicant"]]
+            # Les colonnes de dates sont tout sauf les colonnes de dimensions.
+            date_cols = [c for c in df_filtered.columns if c not in ["geo", "citizen", "applicant"]]
 
             # Convertir les valeurs en numériques (gérer les ': ' et espaces)
             for col in date_cols:
-                # remove non-numeric chars except dot
                 df_filtered[col] = df_filtered[col].str.replace(r"[^0-9.]", "", regex=True)
-                # Coerce to numeric, fillna 0, then int
                 df_filtered[col] = pd.to_numeric(df_filtered[col], errors="coerce").fillna(0).astype(int)
 
-            # Grouper par geo et sommer toutes les nationalités/sexes/âges
-            df_agg = df_filtered.groupby("geo")[date_cols].sum().reset_index()
-            df_agg["applicant"] = "FRST"
-
-            logging.info(f"Chunk {i + 1}: Aggregated to {len(df_agg)} rows (by geo_code)")
-
-            # Maintenant le melt sur un DataFrame BEAUCOUP plus petit (27 lignes max)
-            df_long = df_agg.melt(id_vars=["geo", "applicant"], var_name="date_raw", value_name="total_applications")
-
-            # Parse dates - support YYYY-MM format
-            df_long = df_long[df_long["date_raw"].str.match(r"^\d{4}-\d{2}$", na=False)]
-            df_long["date"] = pd.to_datetime(df_long["date_raw"] + "-01", format="%Y-%m-%d", errors="coerce")
-            df_long = df_long.dropna(subset=["date"])
-
-            # Rename et préparer pour la DB
-            df_final = df_long.rename(columns={"geo": "geo_code", "applicant": "applicant_type"})
-
-            # Ajouter citizen_code comme 'TOTAL' (agrégé)
-            df_final["citizen_code"] = "TOTAL"
+            df_final = aggregate_chunk_to_long(df_filtered, date_cols)
+            n_geos = df_final.loc[df_final["citizen_code"] != "TOTAL", "geo_code"].nunique()
+            logging.info(
+                f"Chunk {i + 1}: Aggregated to {len(df_final)} rows "
+                f"({n_geos} geos × per-citizen + TOTAL)"
+            )
 
             # Select final columns
             final_cols = ["date", "geo_code", "citizen_code", "applicant_type", "total_applications"]
@@ -313,7 +305,13 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
                 logging.info(f"Chunk {i + 1}: Saved {len(df_final)} records")
 
             # Libérer la mémoire
-            del df, dimensions, df_filtered, dimensions_filtered, df_agg, df_long, df_final
+            del (
+                df,
+                dimensions,
+                df_filtered,
+                dimensions_filtered,
+                df_final,
+            )
 
         logging.info(f"Total records saved: {total_rows}")
 
@@ -444,6 +442,59 @@ def promote_staging_to_production():
     logging.info("✅ Staging promoted to asylum_data atomically.")
 
 
+SAVE_BATCH_SIZE = 5000
+
+
+def aggregate_chunk_to_long(df_dim_wide: pd.DataFrame, date_cols: list) -> pd.DataFrame:
+    """Aggregate a filtered wide-format chunk into a long-format frame.
+
+    Input is a chunk that has already been filtered to FRST + EU + ISO-2
+    citizen rows and has columns ``geo``, ``citizen``, ``applicant`` plus
+    the date columns listed in ``date_cols``. Sex and age dimensions are
+    expected to still be present implicitly (multiple rows per
+    geo/citizen combination); this function collapses them via the
+    groupby step.
+
+    Output columns: ``date``, ``geo_code``, ``citizen_code``,
+    ``applicant_type``, ``total_applications``. A ``citizen_code='TOTAL'``
+    row is emitted for every (date, geo) tuple, derived by summing across
+    nationalities so that the TOTAL is internally consistent with the
+    per-nationality rows in the same row set.
+
+    Pure function (no I/O) — covered by unit tests.
+    """
+    if df_dim_wide.empty or not date_cols:
+        return pd.DataFrame(
+            columns=["date", "geo_code", "citizen_code", "applicant_type", "total_applications"]
+        )
+
+    df_per_citizen = df_dim_wide.groupby(["geo", "citizen"])[date_cols].sum().reset_index()
+    df_per_citizen["applicant"] = "FRST"
+
+    df_total = df_per_citizen.groupby("geo")[date_cols].sum().reset_index()
+    df_total["citizen"] = "TOTAL"
+    df_total["applicant"] = "FRST"
+
+    df_agg = pd.concat([df_per_citizen, df_total], ignore_index=True)
+
+    df_long = df_agg.melt(
+        id_vars=["geo", "citizen", "applicant"],
+        var_name="date_raw",
+        value_name="total_applications",
+    )
+    df_long = df_long[df_long["date_raw"].str.match(r"^\d{4}-\d{2}$", na=False)]
+    df_long["date"] = pd.to_datetime(df_long["date_raw"] + "-01", format="%Y-%m-%d", errors="coerce")
+    df_long = df_long.dropna(subset=["date"])
+
+    df_final = df_long.rename(
+        columns={"geo": "geo_code", "citizen": "citizen_code", "applicant": "applicant_type"}
+    )
+
+    return df_final[
+        ["date", "geo_code", "citizen_code", "applicant_type", "total_applications"]
+    ].reset_index(drop=True)
+
+
 def save_to_db(df):
     """Write a chunk into the staging table with summing-UPSERT semantics.
 
@@ -451,6 +502,10 @@ def save_to_db(df):
     applicant) tuple because the source TSV is split positionally; we sum
     them so the staging table ends up with the full per-key total before
     promotion.
+
+    Rows are sent in batches via SQLAlchemy ``executemany`` rather than one
+    INSERT per row — important now that retaining the per-citizen breakdown
+    multiplies the row count by ~150×.
     """
     if df.empty:
         logging.info("No data to save")
@@ -460,25 +515,23 @@ def save_to_db(df):
 
     engine = get_db_engine()
 
+    upsert_stmt = text(
+        f"""
+        INSERT INTO {STAGING_TABLE} (date, geo_code, citizen_code, applicant_type, total_applications)
+        VALUES (:date, :geo_code, :citizen_code, :applicant_type, :total_applications)
+        ON CONFLICT (date, geo_code, citizen_code, applicant_type)
+        DO UPDATE SET total_applications = {STAGING_TABLE}.total_applications + EXCLUDED.total_applications
+        """
+    )
+
+    records = df[["date", "geo_code", "citizen_code", "applicant_type", "total_applications"]].to_dict(
+        orient="records"
+    )
+
     with engine.begin() as conn:
-        for _, row in df.iterrows():
-            conn.execute(
-                text(
-                    f"""
-                    INSERT INTO {STAGING_TABLE} (date, geo_code, citizen_code, applicant_type, total_applications)
-                    VALUES (:date, :geo_code, :citizen_code, :applicant_type, :total_applications)
-                    ON CONFLICT (date, geo_code, citizen_code, applicant_type)
-                    DO UPDATE SET total_applications = {STAGING_TABLE}.total_applications + EXCLUDED.total_applications
-                    """
-                ),
-                {
-                    "date": row["date"],
-                    "geo_code": row["geo_code"],
-                    "citizen_code": row["citizen_code"],
-                    "applicant_type": row["applicant_type"],
-                    "total_applications": row["total_applications"],
-                },
-            )
+        for start in range(0, len(records), SAVE_BATCH_SIZE):
+            batch = records[start : start + SAVE_BATCH_SIZE]
+            conn.execute(upsert_stmt, batch)
 
     logging.info("✅ Chunk saved to staging")
 

@@ -252,13 +252,19 @@ def get_predictions():
     dependencies=[Depends(require_api_key)],
 )
 def get_history(geo_code: str):
-    """Returns raw applications count for line chart, aggregated by date."""
+    """Returns raw applications count for line chart, aggregated by date.
+
+    Reads the harvester's pre-aggregated `citizen_code = 'TOTAL'` row so
+    the result is identical to the previous behaviour and not affected by
+    the per-nationality breakdown that now lives alongside it.
+    """
     query = text(
         """
-        SELECT date, SUM(total_applications) AS total_applications
+        SELECT date, total_applications
         FROM asylum_data
-        WHERE geo_code = :geo AND applicant_type = 'FRST'
-        GROUP BY date
+        WHERE geo_code = :geo
+          AND applicant_type = 'FRST'
+          AND citizen_code = 'TOTAL'
         ORDER BY date
         """
     )

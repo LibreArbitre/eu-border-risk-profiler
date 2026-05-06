@@ -118,13 +118,17 @@ def retry(operation_name):
 def get_data_from_db():
     logging.info("Fetching data from DB...")
     engine = get_db_engine()
-    # Aggregate all citizenships per destination country (geo_code)
-    # This sums total_applications across all citizen_codes for each geo_code and date
+    # Use the pre-aggregated TOTAL rows produced by the harvester rather
+    # than summing per-nationality rows on the fly. The harvester writes
+    # one TOTAL row per (date, geo_code) alongside per-nationality rows;
+    # filtering on `citizen_code = 'TOTAL'` gives us the country-level
+    # series the predictor was always meant to consume, without
+    # double-counting the per-nationality breakdown.
     query = """
-        SELECT date, geo_code, SUM(total_applications) as total_applications 
-        FROM asylum_data 
-        WHERE applicant_type = 'FRST' 
-        GROUP BY date, geo_code 
+        SELECT date, geo_code, total_applications
+        FROM asylum_data
+        WHERE applicant_type = 'FRST'
+          AND citizen_code = 'TOTAL'
         ORDER BY date
     """
     df = pd.read_sql(query, engine)
