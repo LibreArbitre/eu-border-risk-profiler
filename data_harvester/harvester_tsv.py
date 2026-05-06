@@ -120,7 +120,16 @@ def update_local_last_modified(last_modified_str):
 
 
 def get_remote_details(url):
-    """Récupère les headers du fichier distant sans télécharger"""
+    """Récupère les headers du fichier distant sans télécharger.
+
+    NOTE: Eurostat's bulk TSV endpoint stopped emitting `Last-Modified`
+    and `Content-Length` headers some time after we first wired this
+    against the bulk download API. The HEAD response is now an empty
+    chunked-encoded payload with no freshness signal at all. Kept here
+    only because some operators may still want a sanity ping that the
+    server is reachable; freshness detection has moved to
+    `get_remote_updated_at` below.
+    """
     try:
         response = requests.head(url, timeout=30, headers=EUROSTAT_HTTP_HEADERS)
         response.raise_for_status()
@@ -128,6 +137,42 @@ def get_remote_details(url):
     except Exception as e:
         logging.error(f"Failed to check remote file: {e}")
         raise
+
+
+# Single-cell JSON-stat probe. The payload is around one kilobyte and
+# carries the dataset-level `updated` field, which Eurostat keeps
+# accurate for every new publication and revision. The exact filter
+# values don't matter — we only consume the metadata, not the cell.
+EUROSTAT_METADATA_PROBE_URL = (
+    "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/"
+    "migr_asyappctzm?lastTimePeriod=1&geo=FR&applicant=FRST&age=TOTAL"
+    "&sex=T&unit=PER&citizen=SY"
+)
+
+
+def get_remote_updated_at() -> str | None:
+    """Return the dataset's official `updated` timestamp from Eurostat.
+
+    Probes the JSON-stat endpoint with a one-cell filter so we transfer
+    ~1 KB instead of the 440 MB bulk file just to check freshness. The
+    returned value is an ISO-8601 string like
+    ``"2026-05-05T11:00:00+0200"`` and is treated as an opaque cache key:
+    we only ever compare it for equality with the previously stored
+    value. Returns ``None`` if the probe fails — callers fall back to
+    re-downloading, which is the same behaviour as if the metadata had
+    changed.
+    """
+    try:
+        response = requests.get(
+            EUROSTAT_METADATA_PROBE_URL,
+            timeout=30,
+            headers=EUROSTAT_HTTP_HEADERS,
+        )
+        response.raise_for_status()
+        return response.json().get("updated")
+    except Exception as exc:
+        logging.error(f"Failed to probe Eurostat metadata: {exc}")
+        return None
 
 
 def download_eurostat_tsv(url):
@@ -550,15 +595,17 @@ def run_harvest():
         # 0. Init Meta Table
         init_meta_table()
 
-        # 0.5 Check Last-Modified
-        logging.info("Checking remote file info...")
-        remote_last_mod, remote_size = get_remote_details(url)
-        local_last_mod = get_local_last_modified()
+        # 0.5 Probe Eurostat for the dataset's official `updated` timestamp.
+        #     Falls back to a re-download when the probe fails or the
+        #     timestamp differs from the stored one.
+        logging.info("Probing Eurostat metadata...")
+        remote_updated = get_remote_updated_at()
+        local_updated = get_local_last_modified()
 
-        logging.info(f"Remote Last-Modified: {remote_last_mod}")
-        logging.info(f"Local Last-Modified:  {local_last_mod}")
+        logging.info(f"Remote updated: {remote_updated}")
+        logging.info(f"Local updated:  {local_updated}")
 
-        if remote_last_mod and remote_last_mod == local_last_mod:
+        if remote_updated and remote_updated == local_updated:
             # Touch the health file so a quiet day doesn't make us look stale
             # to the docker healthcheck — we DID check, we just had nothing
             # to do. asylum_data is unchanged from the previous successful
@@ -568,9 +615,20 @@ def run_harvest():
             logging.info("=" * 60)
             return
 
-        logging.info(
-            f"Update detected or first run. Proceeding with download ({remote_size / (1024 * 1024):.1f} MB)..."
-        )
+        if remote_updated is None and local_updated is not None:
+            # The metadata probe failed (timeout, 5xx, schema change…) but we
+            # already have a previously stored marker. Don't waste 6-8 min of
+            # CPU + 440 MB of bandwidth chasing a remote freshness signal we
+            # couldn't read; trust the cache and try again on the next cycle.
+            _touch_health_file()
+            logging.warning(
+                "Remote freshness probe returned None — keeping the cached "
+                "snapshot and skipping this cycle."
+            )
+            logging.info("=" * 60)
+            return
+
+        logging.info("Update detected or first run. Proceeding with bulk download...")
 
         # 1. Télécharger le TSV
         tsv_content = download_eurostat_tsv(url)
@@ -584,10 +642,10 @@ def run_harvest():
         # 2.5 Swap atomique staging -> asylum_data
         promote_staging_to_production()
 
-        # 3. Update Last-Modified
-        if remote_last_mod:
-            update_local_last_modified(remote_last_mod)
-            logging.info(f"Updated local Last-Modified to: {remote_last_mod}")
+        # 3. Persister le timestamp de fraîcheur pour le prochain cycle.
+        if remote_updated:
+            update_local_last_modified(remote_updated)
+            logging.info(f"Updated local freshness marker to: {remote_updated}")
 
         _touch_health_file()
         logging.info("=" * 60)
