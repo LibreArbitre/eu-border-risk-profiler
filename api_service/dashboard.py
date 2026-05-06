@@ -106,8 +106,13 @@ def source_caption(source_text: str = "Eurostat — migr_asyappctzm") -> None:
 
 
 def section_title(label: str) -> None:
-    """Render a section title with the dashboard's standard styling."""
-    st.markdown(f'<h2 class="section-title">{label}</h2>', unsafe_allow_html=True)
+    """Render a section title with the dashboard's standard styling.
+
+    Uses a styled ``<div>`` rather than an HTML heading tag because
+    Streamlit auto-attaches anchor links to anything that looks like a
+    heading inside a markdown block, which we don't want.
+    """
+    st.markdown(f'<div class="section-title">{label}</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +153,9 @@ st.markdown(
         max-width: 1280px;
     }
 
-    /* Page header */
-    .page-header {
-        border-bottom: 1px solid var(--border);
-        padding-bottom: 1rem;
-        margin-bottom: 1.5rem;
-    }
+    /* Page title block (sits inside an outer column; the accent rule and
+       hairline below the metadata strip are rendered as separate full-width
+       elements so they span the whole page, not just the title column). */
     .page-title {
         font-size: 1.875rem;
         font-weight: 700;
@@ -166,6 +168,18 @@ st.markdown(
         color: var(--neutral);
         font-size: 0.95rem;
         margin: 0.35rem 0 0;
+    }
+    /* Metadata strip below the title — gives the header more
+       informational density and a more "dashboard" feel. */
+    .page-meta {
+        color: var(--neutral-light);
+        font-size: 0.78rem;
+        margin: 0.65rem 0 0;
+        font-variant-numeric: tabular-nums;
+    }
+    .page-meta .sep {
+        color: var(--border);
+        margin: 0 0.55rem;
     }
 
     /* Section title */
@@ -328,23 +342,8 @@ ISO_MAP = {
 }
 
 # ---------------------------------------------------------------------------
-# Header (language selector, then page title)
-# ---------------------------------------------------------------------------
-
-language_selector()
-
-st.markdown(
-    f"""
-<div class="page-header">
-    <h1 class="page-title">{t("header.title")}</h1>
-    <p class="page-subtitle">{t("header.subtitle")}</p>
-</div>
-""",
-    unsafe_allow_html=True,
-)
-
-# ---------------------------------------------------------------------------
-# Data loading + df_map computation
+# Data loading + df_map computation (must happen before the header so the
+# metadata strip can quote the actual data range and country count).
 # ---------------------------------------------------------------------------
 
 df_pred = get_predictions()
@@ -374,6 +373,50 @@ if not df_pred.empty:
     df_map = merged.groupby("geo_code").agg(agg_spec).reset_index()
     df_map["risk_score"] = df_map["predicted_risk_score"]
     valid_data = True
+
+# ---------------------------------------------------------------------------
+# Header — primary-coloured accent rule, then a row with title + language
+# selector, then a metadata strip, then a hairline closing the header band.
+# ---------------------------------------------------------------------------
+
+# Primary accent rule above the header (full-width).
+st.markdown(
+    '<div style="height:3px;background:#1e3a8a;margin:-0.5rem 0 1rem;"></div>',
+    unsafe_allow_html=True,
+)
+
+# Title block (left) + language selector (right).
+col_title, col_lang = st.columns([5, 1])
+with col_title:
+    st.markdown(
+        f"""
+<div>
+    <div class="page-title">{t("header.title")}</div>
+    <div class="page-subtitle">{t("header.subtitle")}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+with col_lang:
+    language_selector()
+
+# Metadata strip (full-width) — renders even when data isn't loaded yet so
+# the layout stays stable; the date range is just omitted in that case.
+meta_parts: list = []
+if valid_data:
+    src_min = df_pred["date"].min()
+    src_max = df_pred["date"].max()
+    if pd.notna(src_min) and pd.notna(src_max):
+        meta_parts.append(f"{src_min.strftime('%Y-%m')} → {src_max.strftime('%Y-%m')}")
+    meta_parts.append(f"{int(df_map['geo_code'].nunique())} {t('header.meta_countries')}")
+meta_parts.append("Eurostat — migr_asyappctzm")
+
+meta_html = '<span class="sep">·</span>'.join(meta_parts)
+st.markdown(
+    f'<div class="page-meta">{meta_html}</div>'
+    f'<hr style="border:none;border-top:1px solid #e2e8f0;margin:0.6rem 0 1.5rem;" />',
+    unsafe_allow_html=True,
+)
 
 # ---------------------------------------------------------------------------
 # KPI metrics row

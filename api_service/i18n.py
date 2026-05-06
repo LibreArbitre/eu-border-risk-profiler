@@ -93,23 +93,23 @@ def country_name(geo_code: str) -> str:
 
 
 def language_selector() -> str:
-    """Render a small language selector and return the active code.
+    """Render a language selector and return the active code.
 
-    The selector is a horizontal-aligned native ``selectbox`` that persists
-    via session state and rewrites the ``?lang=`` query param so the URL
-    can be shared with the chosen locale.
+    The selector is a native ``st.selectbox`` rendered without any
+    layout wrapper — the caller decides placement (e.g. inside a column
+    of the page header). It persists the chosen value via session state
+    and rewrites the ``?lang=`` query param so the URL can be shared
+    with the chosen locale.
     """
     current = get_lang()
-    cols = st.columns([6, 1])
-    with cols[1]:
-        choice = st.selectbox(
-            t("selector.label"),
-            options=list(SUPPORTED_LANGS),
-            format_func=lambda code: LANG_LABELS.get(code, code),
-            index=SUPPORTED_LANGS.index(current),
-            key="lang_selector",
-            label_visibility="collapsed",
-        )
+    choice = st.selectbox(
+        t("selector.label"),
+        options=list(SUPPORTED_LANGS),
+        format_func=lambda code: LANG_LABELS.get(code, code),
+        index=SUPPORTED_LANGS.index(current),
+        key="lang_selector",
+        label_visibility="collapsed",
+    )
     if choice != current:
         set_lang(choice)
         st.rerun()

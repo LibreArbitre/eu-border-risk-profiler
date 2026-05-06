@@ -15,6 +15,7 @@ title = "Profileur de risque migratoire UE"
 subtitle = "Suivi et prévision des tendances de demandes d'asile dans l'Union européenne"
 status_label = "État du système"
 status_value = "Opérationnel"
+meta_countries = "États membres de l'UE"
 
 [kpi]
 avg_risk = "Indice de risque moyen UE"

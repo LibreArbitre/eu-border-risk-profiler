@@ -8,3 +8,12 @@ enableXsrfProtection = true
 
 [ui]
 hideTopBar = true
+
+# Pin the dashboard to light mode so the experience is consistent across
+# users regardless of their OS preference. The custom CSS uses light-mode
+# colour tokens; honoring the user's `prefers-color-scheme: dark` would
+# leave the chrome dark and the cards light — visually broken. Light mode
+# also matches the convention used by EU institutional data tools
+# (Eurostat Data Browser, ECB SDW, OECD Data Explorer).
+[theme]
+base = "light"

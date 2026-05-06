@@ -15,6 +15,7 @@ title = "EU Border Risk Profiler"
 subtitle = "Monitoring and forecasting asylum application trends across the European Union"
 status_label = "System Status"
 status_value = "Operational"
+meta_countries = "EU Member States"
 
 [kpi]
 avg_risk = "EU Avg Risk Index"

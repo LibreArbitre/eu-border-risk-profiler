@@ -15,6 +15,7 @@ title = "ELi Piiririski Profiiler"
 subtitle = "Varjupaigataotluste trendide jälgimine ja prognoosimine kogu Euroopa Liidus"
 status_label = "Süsteemi olek"
 status_value = "Töötab"
+meta_countries = "ELi liikmesriiki"
 
 [kpi]
 avg_risk = "ELi keskmine riskiindeks"
