@@ -670,6 +670,13 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--healthcheck":
         sys.exit(_run_healthcheck())
 
+    # One-shot mode: run a single harvest then exit (no resident daemon).
+    # Used by the monthly scheduler sidecar so the container holds zero RAM
+    # between runs instead of sleeping 24/7 with the full heap loaded.
+    if len(sys.argv) > 1 and sys.argv[1] == "--once":
+        run_harvest()
+        sys.exit(0)
+
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
 

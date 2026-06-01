@@ -748,6 +748,9 @@ def start_scheduler():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Risk predictor service")
     parser.add_argument("--healthcheck", action="store_true", help="Run healthcheck and exit")
+    parser.add_argument(
+        "--once", action="store_true", help="Run a single prediction job and exit (no scheduler)"
+    )
     args = parser.parse_args()
 
     configure_logging()
@@ -755,6 +758,15 @@ if __name__ == "__main__":
     if args.healthcheck:
         healthy = check_health()
         sys.exit(0 if healthy else 1)
+
+    # One-shot mode: run a single prediction job then exit (no resident
+    # scheduler). Used by the monthly scheduler sidecar so the container holds
+    # zero RAM between runs. run_job() already waits (bounded) for fresh data.
+    if args.once:
+        logging.info("Risk Predictor one-shot run...")
+        ensure_predictions_schema()
+        run_job()
+        sys.exit(0)
 
     logging.info("Risk Predictor Service Starting...")
     time.sleep(15)  # Wait for Harvester?

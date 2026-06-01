@@ -31,7 +31,9 @@ services:
       context: ./data_harvester
       dockerfile: Dockerfile
     container_name: eu_brp_harvester
-    restart: on-failure
+    # One-shot : récolte une fois puis sort (plus de daemon résident 24/7).
+    # Re-déclenché 1x/mois par le service `scheduler`. restart "no" -> reste exited.
+    restart: "no"
     # S'assure que la BDD est prête avant de démarrer le Harvester
     depends_on:
       db:
@@ -49,17 +51,7 @@ services:
       HARVESTER_HEALTH_FILE: ${HARVESTER_HEALTH_FILE:-/tmp/harvester_health}
       HARVESTER_MONTHS: ${HARVESTER_MONTHS:-60}
       HARVESTER_TIME_CHUNK: ${HARVESTER_TIME_CHUNK:-12}
-    # Command: exécute le script (peut être remplacé par un scheduler en production)
-    command: python /app/harvester_tsv.py
-    healthcheck:
-      test: [ "CMD-SHELL", "python /app/harvester_tsv.py --healthcheck" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      # The first cold harvest needs to download ~440 MB and stage it
-      # before the health file is written. Allow generous time so the
-      # container is not flagged unhealthy during that bootstrap.
-      start_period: 600s
+    command: python /app/harvester_tsv.py --once
     networks:
       - eubrp_net
 
@@ -69,15 +61,13 @@ services:
       context: ./risk_predictor
       dockerfile: Dockerfile
     container_name: eu_brp_predictor
-    restart: on-failure
-    # Wait for the harvester to publish a fresh asylum_data table before
-    # training. The harvester healthcheck only reports healthy after the
-    # first staging swap, so this prevents the predictor from racing
-    # against the bootstrap and producing stale predictions.
+    # One-shot comme le harvester ; déclenché 1x/mois après la récolte.
+    restart: "no"
+    # En one-shot, l'ordre harvester -> predictor est garanti par le scheduler
+    # (docker start -a en série). run_job() attend en plus (boucle bornée) que
+    # des données fraîches soient présentes avant d'entraîner, donc pas de course.
     depends_on:
       db:
-        condition: service_healthy
-      data_harvester:
         condition: service_healthy
     environment:
       TZ: ${TZ:-Europe/Paris}
@@ -90,12 +80,28 @@ services:
       RETRY_BACKOFF_SECONDS: ${RETRY_BACKOFF_SECONDS:-2}
       EXIT_ON_FAILURE: ${EXIT_ON_FAILURE:-true}
       PREDICTOR_HEALTH_FILE: ${PREDICTOR_HEALTH_FILE:-/tmp/predictor_health}
-    command: python /app/risk_predictor.py
-    healthcheck:
-      test: [ "CMD-SHELL", "python /app/risk_predictor.py --healthcheck" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    command: python /app/risk_predictor.py --once
+    networks:
+      - eubrp_net
+
+  # 3b. Scheduler : déclenche harvester puis predictor 1x/mois (cron sidecar léger ~15 Mo).
+  # Re-exécute les conteneurs one-shot EXISTANTS via le socket Docker -> aucune duplication
+  # de config/secrets/réseau. `docker start -a` attend la fin et propage le code retour,
+  # donc le predictor ne tourne que si la récolte a réussi (&&).
+  scheduler:
+    image: docker:27-cli
+    container_name: eu_brp_scheduler
+    restart: unless-stopped
+    depends_on:
+      - db
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo '0 2 1 * * docker start -a eu_brp_harvester && docker start -a eu_brp_predictor' > /etc/crontabs/root
+        exec crond -f -l 8 -c /etc/crontabs
     networks:
       - eubrp_net
 
