@@ -22,9 +22,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    networks:
-      - eubrp_net
-
   # 2. Agent: Data_Harvester (Récolte et nettoyage des données Eurostat)
   data_harvester:
     build:
@@ -52,9 +49,6 @@ services:
       HARVESTER_MONTHS: ${HARVESTER_MONTHS:-60}
       HARVESTER_TIME_CHUNK: ${HARVESTER_TIME_CHUNK:-12}
     command: python /app/harvester_tsv.py --once
-    networks:
-      - eubrp_net
-
   # 3. Agent: Risk_Predictor (Calcul du risque et entraînement du modèle IA)
   risk_predictor:
     build:
@@ -81,9 +75,6 @@ services:
       EXIT_ON_FAILURE: ${EXIT_ON_FAILURE:-true}
       PREDICTOR_HEALTH_FILE: ${PREDICTOR_HEALTH_FILE:-/tmp/predictor_health}
     command: python /app/risk_predictor.py --once
-    networks:
-      - eubrp_net
-
   # 3b. Scheduler : déclenche harvester puis predictor 1x/mois (cron sidecar léger ~15 Mo).
   # Re-exécute les conteneurs one-shot EXISTANTS via le socket Docker -> aucune duplication
   # de config/secrets/réseau. `docker start -a` attend la fin et propage le code retour,
@@ -102,9 +93,6 @@ services:
       - |
         echo '0 2 1 * * docker start -a eu_brp_harvester && docker start -a eu_brp_predictor' > /etc/crontabs/root
         exec crond -f -l 8 -c /etc/crontabs
-    networks:
-      - eubrp_net
-
   # 4. Agent: API_Service (FastAPI Backend)
   api_service:
     build:
@@ -130,9 +118,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    networks:
-      - eubrp_net
-
   # 5. Tableau de bord Streamlit
   dashboard:
     build:
@@ -156,14 +141,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    networks:
-      - eubrp_net
-
 # Volumes pour la persistance des données
 volumes:
   db_data:
-
-    # Réseau interne pour la communication des services
-networks:
-  eubrp_net:
-    driver: bridge
