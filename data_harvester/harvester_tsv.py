@@ -9,7 +9,6 @@ import os
 import signal
 import sys
 import time
-from io import StringIO
 
 import pandas as pd
 import requests
@@ -177,8 +176,13 @@ def get_remote_updated_at() -> str | None:
 
 def download_eurostat_tsv(url):
     """
-    Télécharge le fichier TSV complet depuis Eurostat
+    Télécharge le fichier TSV complet depuis Eurostat vers le disque.
     Dataset: migr_asyappctzm (Asylum applications by citizenship)
+
+    Retourne le CHEMIN du fichier téléchargé (pas son contenu) : le TSV
+    fait ~440 Mo et le charger entièrement en RAM puis le dupliquer en
+    ``StringIO`` faisait grimper la mémoire à plusieurs Go. Le parsing
+    en aval lit directement depuis le disque en flux via ``pd.read_csv``.
     """
     logging.info("Downloading Eurostat TSV bulk file...")
 
@@ -197,22 +201,22 @@ def download_eurostat_tsv(url):
 
         logging.info(f"Download complete. Total size: {downloaded / (1024 * 1024):.1f} MB")
 
-        # Read file content for parsing
-        with open(local_filename, "r", encoding="utf-8") as f:
-            tsv_content = f.read()
-
-        return tsv_content
+        return local_filename
 
     except Exception as e:
         logging.error(f"Download failed: {e}")
         raise
 
 
-def process_and_save_chunked(tsv_content, chunk_size=100000):
+def process_and_save_chunked(tsv_path, chunk_size=100000):
     """
     Parse le TSV Eurostat en chunks et sauvegarde au fur et à mesure.
     OPTIMISÉ: Filtre et agrège AVANT le melt pour réduire la consommation mémoire.
     FIX: dtype=str pour éviter les DtypeVerify warnings
+
+    ``tsv_path`` est le chemin du fichier téléchargé ; ``pd.read_csv`` le
+    lit en flux depuis le disque (au lieu d'un ``StringIO`` en RAM), ce
+    qui évite de garder l'intégralité des ~440 Mo en mémoire.
     """
     logging.info("Starting optimized chunked processing...")
 
@@ -250,7 +254,8 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
     try:
         # First read header to get columns
         header_df = pd.read_csv(
-            StringIO(tsv_content), sep="\t", engine="c", quoting=csv.QUOTE_NONE, on_bad_lines="warn", nrows=0
+            tsv_path, sep="\t", engine="c", quoting=csv.QUOTE_NONE, on_bad_lines="warn", nrows=0,
+            encoding="utf-8",
         )
         header_df.columns = header_df.columns.str.strip()
         columns = header_df.columns.tolist()
@@ -259,7 +264,7 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
         # FIX: dtype=str forces all columns to be read as strings initially.
         # This prevents pandas from inferring int then crashing on ':', 'p', etc.
         chunk_iter = pd.read_csv(
-            StringIO(tsv_content),
+            tsv_path,
             sep="\t",
             engine="c",
             quoting=csv.QUOTE_NONE,
@@ -268,6 +273,7 @@ def process_and_save_chunked(tsv_content, chunk_size=100000):
             names=columns,
             header=0,
             dtype=str,  # <--- CRITICAL FIX FOR WARNINGS
+            encoding="utf-8",
         )
 
         total_rows = 0
@@ -630,14 +636,14 @@ def run_harvest():
 
         logging.info("Update detected or first run. Proceeding with bulk download...")
 
-        # 1. Télécharger le TSV
-        tsv_content = download_eurostat_tsv(url)
+        # 1. Télécharger le TSV (sur disque, pas en RAM)
+        tsv_path = download_eurostat_tsv(url)
 
         # 1.5 Préparer la table de staging (vide). asylum_data n'est PAS touchée.
         reset_staging_table()
 
         # 2. Parser et Sauvegarder en chunks dans la staging
-        process_and_save_chunked(tsv_content)
+        process_and_save_chunked(tsv_path)
 
         # 2.5 Swap atomique staging -> asylum_data
         promote_staging_to_production()
