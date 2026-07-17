@@ -84,9 +84,11 @@ mitte hinnangut taotlejatele endile.
 
 **Teadaolevad piirangud.** Avaldamise viivituse tõttu on värskeim kuu
 sageli alaregistreeritud, ja prognoosimudel jätab riigi viimase kuu
-välja, kui see oleks muidu null. Kodakondsus on praegu agregeeritud
-väärtusele `TOTAL` — riigi-täpsusega jaotus on plaanis. Prognoosid M+2
-ja M+3 on autoregressiivsed ja pärivad M+1 vea.
+välja, kui see oleks muidu null. Kodakondsuste jaotus sisaldab ainult
+ISO-2 koodiga kodakondsusi; tuletatud `TOTAL` rida ei hõlma seega
+kodakondsuseta ega teadmata kodakondsusega taotlejaid ja võib jääda
+Eurostati enda koondnäitajast veidi väiksemaks. Prognoosid M+2 ja M+3
+on autoregressiivsed ja pärivad M+1 vea.
 
 **Tsiteerimine.**
 > Eurostat. *Asylum applicants by type, citizenship, age and sex —

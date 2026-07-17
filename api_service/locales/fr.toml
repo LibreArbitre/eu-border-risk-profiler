@@ -89,10 +89,11 @@ l'asile.
 **Limitations connues.** Le délai de publication implique que le mois
 le plus récent est souvent sous-estimé ; le prédicteur écarte
 automatiquement le dernier mois d'un pays si ce mois est à zéro alors
-que le précédent était substantiel. La nationalité est actuellement
-agrégée à `TOTAL` — un découpage par nationalité est sur la feuille de
-route. Les prévisions M+2 et M+3 sont autorégressives et héritent de
-l'erreur de M+1.
+que le précédent était substantiel. La ventilation par nationalité ne
+conserve que les codes de citoyenneté ISO-2 ; la ligne `TOTAL` dérivée
+exclut donc les apatrides et citoyennetés indéterminées et peut être
+légèrement inférieure à l'agrégat officiel d'Eurostat. Les prévisions
+M+2 et M+3 sont autorégressives et héritent de l'erreur de M+1.
 
 **Citation.**
 > Eurostat. *Asylum applicants by type, citizenship, age and sex —
