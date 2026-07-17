@@ -12,7 +12,6 @@ from api_service.models import (
     RiskPredictionResponse,
 )
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -130,9 +129,12 @@ def healthcheck():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return {"status": "ok"}
-    except Exception as exc:
+    except Exception:
+        # The endpoint is public (docker healthchecks need it unauthenticated),
+        # so never echo the underlying exception: driver messages can contain
+        # the DB host and user. Full detail goes to the logs instead.
         logger.exception("Healthcheck failed", extra={"event": "healthcheck_error"})
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get(
