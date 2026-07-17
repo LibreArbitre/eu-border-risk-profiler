@@ -39,6 +39,11 @@ RETRY_BACKOFF_SECONDS = float(os.getenv("RETRY_BACKOFF_SECONDS", "2"))
 EXIT_ON_FAILURE = os.getenv("EXIT_ON_FAILURE", "true").lower() == "true"
 HEALTH_FILE = os.getenv("PREDICTOR_HEALTH_FILE", "/tmp/predictor_health")
 PREDICTION_RETENTION_DAYS = int(os.getenv("PREDICTION_RETENTION_DAYS", "90"))
+# How many trained model artifacts to keep per (model_name, geo_code) in the
+# registry. Retrains INSERT a new pickle every time; without a cap the table
+# grows without bound (27 models per monthly run). Models referenced by
+# retained predictions are always kept, whatever this value. 0 disables.
+MODEL_REGISTRY_KEEP_LAST = int(os.getenv("MODEL_REGISTRY_KEEP_LAST", "6"))
 # A run that sees only data older than this many days is considered to be
 # reading a stale snapshot of asylum_data (e.g. because the harvester is
 # still mid-swap). The predictor will keep waiting instead of computing
@@ -567,7 +572,6 @@ def check_health():
     return False
 
 
-@retry("DB save")
 def _build_run_metadata(run_metadata=None):
     if run_metadata:
         return {
@@ -591,6 +595,63 @@ def purge_old_predictions(engine, retention_days: int):
         logging.info("Purged %s old prediction rows", result.rowcount)
 
 
+def purge_old_models(engine, keep_last: int):
+    """Keep only the ``keep_last`` most recent models per (model_name, geo_code).
+
+    Every retrain INSERTs a new pickled artifact, and nothing deleted them:
+    the registry grew without bound (one model per country per retrain).
+    Models still referenced by retained ``risk_predictions`` rows are kept
+    regardless of age so the ``model_id`` foreign key stays valid.
+    """
+    if keep_last <= 0:
+        return
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                DELETE FROM model_registry
+                WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY model_name, geo_code
+                                   ORDER BY trained_at DESC, id DESC
+                               ) AS rn
+                        FROM model_registry
+                    ) ranked
+                    WHERE ranked.rn > :keep
+                )
+                AND id NOT IN (
+                    SELECT model_id FROM risk_predictions WHERE model_id IS NOT NULL
+                )
+                """
+            ),
+            {"keep": keep_last},
+        )
+        logging.info("Purged %s old model artifacts", result.rowcount)
+
+
+@retry("DB save")
+def _insert_predictions(engine, predictions_df):
+    """Write the prediction batch inside a single transaction.
+
+    ``to_sql`` on an Engine runs as one transaction, so a failed attempt
+    leaves no partial rows behind and the retry decorator can safely
+    re-run the whole insert. The retention purge stays OUTSIDE this
+    function on purpose: retrying the insert after a purge-only failure
+    would collide with the unique (run_id, geo, target_month) index.
+    """
+    predictions_df.to_sql(
+        "risk_predictions",
+        engine,
+        if_exists="append",
+        index=False,
+        method="multi",
+        chunksize=500,
+    )
+
+
 def save_predictions(df, engine=None, run_metadata=None):
     if df.empty:
         logging.info("No predictions to save.")
@@ -602,18 +663,11 @@ def save_predictions(df, engine=None, run_metadata=None):
     metadata = _build_run_metadata(run_metadata)
 
     try:
-        predictions_df = pd.DataFrame(df.to_dict(orient="records"))
+        predictions_df = df.copy()
         predictions_df["run_id"] = metadata["run_id"]
         predictions_df["prediction_date"] = metadata["prediction_date"]
 
-        predictions_df.to_sql(
-            "risk_predictions",
-            engine,
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=500,
-        )
+        _insert_predictions(engine, predictions_df)
         logging.info(
             "Predictions saved for run %s at %s.",
             metadata["run_id"],
@@ -691,6 +745,7 @@ def run_job():
 
         preds = calculate_risk_and_predict(df, engine)
         save_predictions(preds, engine=engine)
+        purge_old_models(engine, MODEL_REGISTRY_KEEP_LAST)
     except Exception as exc:  # noqa: PERF203 logging
         success = False
         message = str(exc)
