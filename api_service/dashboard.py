@@ -9,7 +9,6 @@ all human-facing strings are localised through ``api_service.i18n``.
 from __future__ import annotations
 
 import os
-from datetime import datetime
 
 import pandas as pd
 import plotly.express as px
@@ -287,16 +286,6 @@ def get_predictions():
 
 
 @st.cache_data(ttl=60)
-def get_latest():
-    try:
-        r = requests.get(f"{API_URL}/api/v1/risk/latest", timeout=10, headers=_API_HEADERS)
-        if r.status_code == 200:
-            return pd.DataFrame(r.json())
-        return pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
-
-
 def get_history(geo_code: str):
     try:
         r = requests.get(
@@ -350,8 +339,6 @@ df_pred = get_predictions()
 if not df_pred.empty:
     df_pred["date"] = pd.to_datetime(df_pred["date"])
     df_pred["prediction_target_month"] = pd.to_datetime(df_pred["prediction_target_month"])
-
-df_curr = get_latest()
 
 valid_data = False
 df_map = pd.DataFrame()
@@ -746,12 +733,19 @@ if API_PUBLIC_URL:
     )
 links_html = '<span class="sep">·</span>'.join(footer_links)
 
+# "Last update" must reflect the data, not the page render time: show the
+# most recent source month feeding the current predictions.
+if not df_pred.empty and pd.notna(df_pred["date"].max()):
+    data_updated = df_pred["date"].max().strftime("%b %Y")
+else:
+    data_updated = "n/a"
+
 st.markdown(
     f"""
 <div class="app-footer">
     <strong>{t("footer.version")}</strong>
     <br>
-    {t("footer.last_update", code="migr_asyappctzm", date=datetime.now().strftime("%d %b %Y"))}
+    {t("footer.last_update", code="migr_asyappctzm", date=data_updated)}
     <br>
     {links_html}
 </div>
