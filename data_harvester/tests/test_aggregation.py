@@ -10,7 +10,6 @@ collapsed, and date columns are filtered to YYYY-MM strings only.
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from data_harvester.harvester_tsv import aggregate_chunk_to_long
 

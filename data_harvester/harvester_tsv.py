@@ -23,6 +23,40 @@ HEALTH_FILE = os.getenv("HARVESTER_HEALTH_FILE", "/tmp/harvester_health")
 HEALTH_MAX_AGE_SECONDS = int(os.getenv("HARVESTER_HEALTH_MAX_AGE_SECONDS", str(25 * 3600)))
 STAGING_TABLE = "asylum_data_staging"
 
+# Network retry policy. In one-shot mode the harvester runs once a month: a
+# transient Eurostat hiccup at that exact moment would otherwise skip the
+# whole month's refresh, so the download and the metadata probe both retry
+# with exponential backoff before giving up.
+RETRY_MAX_ATTEMPTS = int(os.getenv("RETRY_MAX_ATTEMPTS", "3"))
+RETRY_BACKOFF_SECONDS = float(os.getenv("RETRY_BACKOFF_SECONDS", "2"))
+
+
+def retry(operation_name):
+    """Retry decorator with exponential backoff (mirrors the predictor's)."""
+
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            delay = RETRY_BACKOFF_SECONDS
+            for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as exc:
+                    logging.warning(
+                        "%s failed on attempt %s/%s: %s",
+                        operation_name,
+                        attempt,
+                        RETRY_MAX_ATTEMPTS,
+                        exc,
+                    )
+                    if attempt == RETRY_MAX_ATTEMPTS:
+                        raise
+                    time.sleep(delay)
+                    delay *= 2
+
+        return wrapper
+
+    return decorator
+
 # Identify ourselves to Eurostat in the User-Agent so the operator of the
 # Eurostat dissemination service can attribute traffic. Conforms to the
 # Eurostat re-use policy (see docs/DATA_CARD.md).
@@ -110,32 +144,12 @@ def update_local_last_modified(last_modified_str):
     with engine.begin() as conn:
         conn.execute(
             text("""
-            INSERT INTO harvester_meta (key, value, updated_at) 
+            INSERT INTO harvester_meta (key, value, updated_at)
             VALUES ('eurostat_last_modified', :val, NOW())
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
         """),
             {"val": last_modified_str},
         )
-
-
-def get_remote_details(url):
-    """Récupère les headers du fichier distant sans télécharger.
-
-    NOTE: Eurostat's bulk TSV endpoint stopped emitting `Last-Modified`
-    and `Content-Length` headers some time after we first wired this
-    against the bulk download API. The HEAD response is now an empty
-    chunked-encoded payload with no freshness signal at all. Kept here
-    only because some operators may still want a sanity ping that the
-    server is reachable; freshness detection has moved to
-    `get_remote_updated_at` below.
-    """
-    try:
-        response = requests.head(url, timeout=30, headers=EUROSTAT_HTTP_HEADERS)
-        response.raise_for_status()
-        return response.headers.get("Last-Modified"), int(response.headers.get("Content-Length", 0))
-    except Exception as e:
-        logging.error(f"Failed to check remote file: {e}")
-        raise
 
 
 # Single-cell JSON-stat probe. The payload is around one kilobyte and
@@ -149,6 +163,17 @@ EUROSTAT_METADATA_PROBE_URL = (
 )
 
 
+@retry("Eurostat metadata probe")
+def _fetch_remote_updated_at() -> str | None:
+    response = requests.get(
+        EUROSTAT_METADATA_PROBE_URL,
+        timeout=30,
+        headers=EUROSTAT_HTTP_HEADERS,
+    )
+    response.raise_for_status()
+    return response.json().get("updated")
+
+
 def get_remote_updated_at() -> str | None:
     """Return the dataset's official `updated` timestamp from Eurostat.
 
@@ -157,23 +182,17 @@ def get_remote_updated_at() -> str | None:
     returned value is an ISO-8601 string like
     ``"2026-05-05T11:00:00+0200"`` and is treated as an opaque cache key:
     we only ever compare it for equality with the previously stored
-    value. Returns ``None`` if the probe fails — callers fall back to
-    re-downloading, which is the same behaviour as if the metadata had
-    changed.
+    value. Retries transient failures, then returns ``None`` — callers
+    fall back to the cached snapshot (or a re-download on first run).
     """
     try:
-        response = requests.get(
-            EUROSTAT_METADATA_PROBE_URL,
-            timeout=30,
-            headers=EUROSTAT_HTTP_HEADERS,
-        )
-        response.raise_for_status()
-        return response.json().get("updated")
+        return _fetch_remote_updated_at()
     except Exception as exc:
         logging.error(f"Failed to probe Eurostat metadata: {exc}")
         return None
 
 
+@retry("Eurostat bulk download")
 def download_eurostat_tsv(url):
     """
     Télécharge le fichier TSV complet depuis Eurostat vers le disque.
@@ -369,66 +388,6 @@ def process_and_save_chunked(tsv_path, chunk_size=100000):
     except Exception as e:
         logging.error(f"Chunk processing failed: {e}")
         raise
-
-
-def filter_data(df):
-    """
-    Filtre les données pour ne garder que ce qui nous intéresse
-    """
-    logging.info(f"Filtering data... Starting with {len(df)} rows")
-
-    # Filtrer pour First-time applicants (FRST)
-    if "applicant_type" in df.columns:
-        df = df[df["applicant_type"] == "FRST"].copy()
-        logging.info(f"After FRST filter: {len(df)} rows")
-
-    # NOTE: On ne filtre plus sur citizen_code == 'TOTAL' car le dataset n'a pas cette valeur agrégée
-    # Le citizen_code contient des codes pays individuels (AD, AE, AF, etc.)
-    # On garde toutes les nationalités pour une analyse complète
-
-    # Filtrer pour les 27 pays UE
-    eu_countries = [
-        "AT",
-        "BE",
-        "BG",
-        "CY",
-        "CZ",
-        "DE",
-        "DK",
-        "EE",
-        "EL",
-        "ES",
-        "FI",
-        "FR",
-        "HR",
-        "HU",
-        "IE",
-        "IT",
-        "LT",
-        "LU",
-        "LV",
-        "MT",
-        "NL",
-        "PL",
-        "PT",
-        "RO",
-        "SE",
-        "SI",
-        "SK",
-    ]
-
-    df = df[df["geo_code"].isin(eu_countries)].copy()
-    logging.info(f"After EU filter: {len(df)} rows")
-
-    # Dédupliquer
-    before = len(df)
-    df = df.drop_duplicates(subset=["date", "geo_code", "citizen_code", "applicant_type"], keep="last")
-    after = len(df)
-
-    if before != after:
-        logging.info(f"Removed {before - after} duplicates")
-
-    return df
 
 
 def reset_staging_table():
