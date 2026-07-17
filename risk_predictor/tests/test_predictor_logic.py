@@ -3,10 +3,10 @@ from functools import partial
 import numpy as np
 import pandas as pd
 import pytest
+
 import risk_predictor.risk_predictor as rp
 from risk_predictor.risk_predictor import (
     calculate_risk_and_predict,
-    compute_data_signature,
     evaluate_model_holdout,
     get_or_train_model,
     predict_with_quantiles,

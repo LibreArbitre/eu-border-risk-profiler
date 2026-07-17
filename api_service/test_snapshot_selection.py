@@ -1,10 +1,8 @@
 import importlib
-import os
 from datetime import datetime
 
 import pytest
 from sqlalchemy import create_engine, text
-
 
 SCHEMA_SQL = """
 CREATE TABLE risk_predictions (

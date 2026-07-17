@@ -5,9 +5,9 @@ that they can be imported directly from ``risk_predictor``.
 """
 
 from .risk_predictor import (
+    PREDICTION_RETENTION_DAYS,
     calculate_risk_and_predict,
     check_health,
-    PREDICTION_RETENTION_DAYS,
     compute_data_signature,
     configure_logging,
     ensure_predictions_schema,

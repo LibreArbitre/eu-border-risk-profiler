@@ -79,6 +79,8 @@ services:
   # Re-exécute les conteneurs one-shot EXISTANTS via le socket Docker -> aucune duplication
   # de config/secrets/réseau. `docker start -a` attend la fin et propage le code retour,
   # donc le predictor ne tourne que si la récolte a réussi (&&).
+  # NB: crond tourne en UTC dans ce conteneur (pas de tzdata) -> "0 2 1 * *" = 02:00 UTC,
+  # soit 03:00/04:00 Paris selon la saison. Créneau nocturne dans tous les cas.
   scheduler:
     image: docker:27-cli
     container_name: eu_brp_scheduler
@@ -109,8 +111,10 @@ services:
       DB_NAME: ${DB_NAME:-eubrp_db}
       DB_PORT: ${DB_PORT:-5432}
       API_KEY: ${API_KEY:-}
+    # Loopback only: the reverse proxy reaches the container over the Docker
+    # network; the host port is just a local debugging convenience.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     command: uvicorn api_service.main:app --host 0.0.0.0 --port 8000
     healthcheck:
       test: [ "CMD", "python", "-m", "api_service.healthcheck" ]
@@ -132,9 +136,10 @@ services:
       API_KEY: ${API_KEY:-}
       API_PUBLIC_URL: ${API_PUBLIC_URL:-}
       DASHBOARD_DEFAULT_LANG: ${DASHBOARD_DEFAULT_LANG:-en}
+    # Loopback only: same rationale as api_service.
     ports:
-      - "8501:8501"
-    command: streamlit run api_service/dashboard.py --server.port 8501 --server.address 0.0.0.0 --server.enableCORS false
+      - "127.0.0.1:8501:8501"
+    command: streamlit run api_service/dashboard.py --server.port 8501 --server.address 0.0.0.0
     healthcheck:
       test: [ "CMD-SHELL", "python -c \"import sys,requests; sys.exit(0 if requests.get('http://localhost:8501/_stcore/health', timeout=2).status_code==200 else 1)\"" ]
       interval: 10s

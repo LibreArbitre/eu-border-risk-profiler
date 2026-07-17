@@ -15,7 +15,6 @@ from datetime import datetime
 import pytest
 from sqlalchemy import create_engine, text
 
-
 SCHEMA_SQL = """
 CREATE TABLE asylum_data (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,22 +64,33 @@ def _seed(engine, rows):
             conn.execute(insert_sql, row)
 
 
+def _row(date, citizen_code, total, geo_code="FR"):
+    """Build one asylum_data fixture row (FRST applicant type)."""
+    return {
+        "date": date,
+        "geo_code": geo_code,
+        "citizen_code": citizen_code,
+        "applicant_type": "FRST",
+        "total_applications": total,
+    }
+
+
 def test_top_n_ranks_by_volume_and_excludes_total(app_module):
     _seed(
         app_module.engine,
         [
             # SY=300, AF=210, UA=150, TR=100, IQ=40 — top 3 should be SY, AF, UA
-            {"date": datetime(2024, 1, 1), "geo_code": "FR", "citizen_code": "SY", "applicant_type": "FRST", "total_applications": 200},
-            {"date": datetime(2024, 2, 1), "geo_code": "FR", "citizen_code": "SY", "applicant_type": "FRST", "total_applications": 100},
-            {"date": datetime(2024, 1, 1), "geo_code": "FR", "citizen_code": "AF", "applicant_type": "FRST", "total_applications": 120},
-            {"date": datetime(2024, 2, 1), "geo_code": "FR", "citizen_code": "AF", "applicant_type": "FRST", "total_applications": 90},
-            {"date": datetime(2024, 1, 1), "geo_code": "FR", "citizen_code": "UA", "applicant_type": "FRST", "total_applications": 100},
-            {"date": datetime(2024, 2, 1), "geo_code": "FR", "citizen_code": "UA", "applicant_type": "FRST", "total_applications": 50},
-            {"date": datetime(2024, 1, 1), "geo_code": "FR", "citizen_code": "TR", "applicant_type": "FRST", "total_applications": 100},
-            {"date": datetime(2024, 1, 1), "geo_code": "FR", "citizen_code": "IQ", "applicant_type": "FRST", "total_applications": 40},
+            _row(datetime(2024, 1, 1), "SY", 200),
+            _row(datetime(2024, 2, 1), "SY", 100),
+            _row(datetime(2024, 1, 1), "AF", 120),
+            _row(datetime(2024, 2, 1), "AF", 90),
+            _row(datetime(2024, 1, 1), "UA", 100),
+            _row(datetime(2024, 2, 1), "UA", 50),
+            _row(datetime(2024, 1, 1), "TR", 100),
+            _row(datetime(2024, 1, 1), "IQ", 40),
             # Pre-aggregated TOTAL row that must NOT show up in the breakdown
-            {"date": datetime(2024, 1, 1), "geo_code": "FR", "citizen_code": "TOTAL", "applicant_type": "FRST", "total_applications": 560},
-            {"date": datetime(2024, 2, 1), "geo_code": "FR", "citizen_code": "TOTAL", "applicant_type": "FRST", "total_applications": 240},
+            _row(datetime(2024, 1, 1), "TOTAL", 560),
+            _row(datetime(2024, 2, 1), "TOTAL", 240),
         ],
     )
 
@@ -97,7 +107,7 @@ def test_returns_404_for_unknown_geo(app_module):
     _seed(
         app_module.engine,
         [
-            {"date": datetime(2024, 1, 1), "geo_code": "FR", "citizen_code": "SY", "applicant_type": "FRST", "total_applications": 100},
+            _row(datetime(2024, 1, 1), "SY", 100),
         ],
     )
     with pytest.raises(app_module.HTTPException) as excinfo:
@@ -109,8 +119,8 @@ def test_since_parameter_clamps_history(app_module):
     _seed(
         app_module.engine,
         [
-            {"date": datetime(2023, 1, 1), "geo_code": "FR", "citizen_code": "SY", "applicant_type": "FRST", "total_applications": 50},
-            {"date": datetime(2024, 6, 1), "geo_code": "FR", "citizen_code": "SY", "applicant_type": "FRST", "total_applications": 100},
+            _row(datetime(2023, 1, 1), "SY", 50),
+            _row(datetime(2024, 6, 1), "SY", 100),
         ],
     )
     results = app_module.get_history_by_citizen(geo_code="FR", top=5, since="2024-01-01")
