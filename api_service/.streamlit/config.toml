@@ -1,11 +1,30 @@
-[server]
-headless = true
-enableCORS = false
-enableXsrfProtection = false
+# Canonical Streamlit configuration for the dashboard.
+#
+# Streamlit only reads $CWD/.streamlit/config.toml (and ~/.streamlit). The
+# container runs from /app, so the Dockerfile copies this file to
+# /app/.streamlit/config.toml; keep the repo-root .streamlit/config.toml in
+# sync for running the dashboard from the repository root in development.
+
+[client]
+# Don't render full tracebacks in the browser on uncaught exceptions.
+showErrorDetails = false
+toolbarMode = "minimal"
 
 [browser]
 gatherUsageStats = false
 
-[client]
-showErrorDetails = false
-toolbarMode = "minimal"
+[server]
+headless = true
+enableXsrfProtection = true
+
+[ui]
+hideTopBar = true
+
+# Pin the dashboard to light mode so the experience is consistent across
+# users regardless of their OS preference. The custom CSS uses light-mode
+# colour tokens; honoring the user's `prefers-color-scheme: dark` would
+# leave the chrome dark and the cards light, which reads as visually broken.
+# Light mode also matches the convention used by EU institutional data tools
+# (Eurostat Data Browser, ECB SDW, OECD Data Explorer).
+[theme]
+base = "light"

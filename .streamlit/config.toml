@@ -1,9 +1,18 @@
+# Development mirror of api_service/.streamlit/config.toml (the canonical
+# copy shipped into the container). Keep the two files identical: this one
+# is only read when running `streamlit run api_service/dashboard.py` from
+# the repository root.
+
 [client]
+# Don't render full tracebacks in the browser on uncaught exceptions.
 showErrorDetails = false
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
 
 [server]
 headless = true
-enableCORS = false
 enableXsrfProtection = true
 
 [ui]
@@ -12,8 +21,8 @@ hideTopBar = true
 # Pin the dashboard to light mode so the experience is consistent across
 # users regardless of their OS preference. The custom CSS uses light-mode
 # colour tokens; honoring the user's `prefers-color-scheme: dark` would
-# leave the chrome dark and the cards light — visually broken. Light mode
-# also matches the convention used by EU institutional data tools
+# leave the chrome dark and the cards light, which reads as visually broken.
+# Light mode also matches the convention used by EU institutional data tools
 # (Eurostat Data Browser, ECB SDW, OECD Data Explorer).
 [theme]
 base = "light"
