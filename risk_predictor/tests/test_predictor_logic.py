@@ -147,7 +147,7 @@ def test_reuse_model_when_data_signature_matches(monkeypatch):
 
     monkeypatch.setattr(rp, "load_latest_model", fake_loader)
     monkeypatch.setattr(rp, "persist_model", fake_persister)
-    monkeypatch.setattr(rp, "compute_data_signature", lambda df: reuse_signature)
+    monkeypatch.setattr(rp, "compute_data_signature", lambda df, context=None: reuse_signature)
     monkeypatch.setattr(rp, "train_model", fake_train)
     monkeypatch.setattr(
         rp,
@@ -179,6 +179,26 @@ def test_reuse_model_when_data_signature_matches(monkeypatch):
     assert model is reused_model
     assert model_id == 99
     assert info["reused"] is True
+
+
+def test_signature_includes_global_context():
+    """The cache signature must change when the global normalisation shifts,
+    even if the country's own series is identical."""
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range("2023-01-01", periods=6, freq="MS"),
+            "total_applications": [10, 20, 30, 40, 50, 60],
+        }
+    )
+
+    base = rp.compute_data_signature(df)
+    ctx_a = rp.compute_data_signature(df, context="global_max_log=10.000000000000")
+    ctx_b = rp.compute_data_signature(df, context="global_max_log=11.000000000000")
+
+    assert base != ctx_a
+    assert ctx_a != ctx_b
+    # Deterministic for identical inputs.
+    assert ctx_a == rp.compute_data_signature(df, context="global_max_log=10.000000000000")
 
 
 def test_temporal_split_holds_out_recent_rows():

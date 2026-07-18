@@ -195,11 +195,22 @@ def train_model(train_df):
     return model
 
 
-def compute_data_signature(train_df: pd.DataFrame) -> str:
+def compute_data_signature(train_df: pd.DataFrame, context: str | None = None) -> str:
+    """Hash the country's series plus any cross-country training context.
+
+    ``context`` captures inputs that shape the training target but live
+    outside the country's own rows: the risk_score target is normalised
+    against the EU-wide maximum volume, so a new all-time peak anywhere
+    must invalidate every country's cached model, not just the peak
+    country's. Hashing only (date, total_applications) would silently
+    reuse models trained against the old scale.
+    """
     signature_df = train_df[["date", "total_applications"]].copy()
     signature_df["date"] = pd.to_datetime(signature_df["date"])
     signature_df = signature_df.sort_values("date")
     payload = signature_df.to_json(date_format="iso", orient="records")
+    if context:
+        payload = f"{payload}|{context}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -340,8 +351,9 @@ def get_or_train_model(
     train_df,
     loader=load_latest_model,
     persister=persist_model,
+    signature_context=None,
 ):
-    data_signature = compute_data_signature(train_df)
+    data_signature = compute_data_signature(train_df, context=signature_context)
     model, model_id, trained_at, metadata = loader(engine, geo_code)
 
     existing_signature = metadata.get("data_signature") if metadata else None
@@ -425,6 +437,12 @@ def calculate_risk_and_predict(df, engine):
     global_max_log = np.log1p(global_max_vol)
     logging.info("Global Max Volume: %s (Log1p: %s)", global_max_vol, global_max_log)
 
+    # The risk_score target of EVERY country is normalised against this
+    # global constant, so it must be part of each model's cache signature:
+    # a new all-time peak rescales every training target even where the
+    # country's own series did not change.
+    signature_context = f"global_max_log={global_max_log:.12f}"
+
     for geo, group in df.groupby("geo_code"):
         if len(group) < 12:
             # Need some history for lags
@@ -475,7 +493,9 @@ def calculate_risk_and_predict(df, engine):
         if len(train_df) < 6:
             continue
 
-        model, model_id, model_info = get_or_train_model(engine, geo, train_df)
+        model, model_id, model_info = get_or_train_model(
+            engine, geo, train_df, signature_context=signature_context
+        )
         if model_info.get("reused"):
             logging.info(
                 "Model %s for %s reused (signature=%s)",
