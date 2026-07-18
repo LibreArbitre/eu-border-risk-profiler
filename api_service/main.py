@@ -81,19 +81,38 @@ def _months_between(start_value, end_value) -> int:
     return (end.year - start.year) * 12 + (end.month - start.month)
 
 
+# Snapshot selection: batches whose row count reaches this fraction of the
+# best batch compete on recency alone. Pure "biggest batch wins" let an old
+# run shadow every newer one for the whole retention window as soon as a
+# single country dropped out of a later run; pure "newest wins" would serve
+# a half-written or degenerate batch. 0.9 tolerates a couple of missing
+# countries out of 27 while still rejecting truly incomplete runs.
+SNAPSHOT_COMPLETENESS_RATIO = 0.9
+
+
 def _select_best_snapshot(conn) -> Optional[Dict[str, Any]]:
-    """Pick the prediction batch with the highest row count, breaking ties by most recent prediction_date."""
+    """Pick the most recent prediction batch among the reasonably complete ones.
+
+    A batch qualifies when its row count is at least
+    ``SNAPSHOT_COMPLETENESS_RATIO`` of the best batch's row count; among
+    qualifying batches the most recent ``prediction_date`` wins.
+    """
     snapshot_query = text(
         """
-        SELECT run_id, MAX(prediction_date) AS prediction_date, COUNT(*) AS row_count
-        FROM risk_predictions
-        WHERE predicted_risk_score IS NOT NULL
-        GROUP BY run_id
-        ORDER BY row_count DESC, prediction_date DESC
+        WITH batches AS (
+            SELECT run_id, MAX(prediction_date) AS prediction_date, COUNT(*) AS row_count
+            FROM risk_predictions
+            WHERE predicted_risk_score IS NOT NULL
+            GROUP BY run_id
+        )
+        SELECT run_id, prediction_date, row_count
+        FROM batches
+        WHERE row_count >= :ratio * (SELECT MAX(row_count) FROM batches)
+        ORDER BY prediction_date DESC, row_count DESC
         LIMIT 1
         """
     )
-    row = conn.execute(snapshot_query).fetchone()
+    row = conn.execute(snapshot_query, {"ratio": SNAPSHOT_COMPLETENESS_RATIO}).fetchone()
     if not row:
         return None
     return {
@@ -149,7 +168,7 @@ def healthcheck():
 )
 def get_current_risk(
     threshold: Optional[float] = Query(
-        None, ge=0, description="Include only predictions with a risk score at or below this value."
+        None, ge=0, description="Include only predictions with a risk score at or above this value."
     ),
     horizon: Optional[int] = Query(
         None,
@@ -160,11 +179,11 @@ def get_current_risk(
 ):
     """Return the most recent completed set of predictions with optional filtering.
 
-    The query selects the prediction batch with the highest row count (most complete),
-    falling back to the latest batch when counts tie. Clients can optionally filter
-    predictions by a maximum risk score (`threshold`) and by predictive horizon.
-    The horizon is computed from the difference between the source month (`date`)
-    and the `prediction_target_month`.
+    The query selects the newest prediction batch among the reasonably
+    complete ones (see ``_select_best_snapshot``). Clients can optionally
+    filter predictions by a minimum risk score (`threshold`) and by
+    predictive horizon. The horizon is computed from the difference between
+    the source month (`date`) and the `prediction_target_month`.
     """
     try:
         with engine.connect() as conn:
@@ -181,7 +200,10 @@ def get_current_risk(
 
             if horizon is not None and horizon_months != horizon:
                 continue
-            if threshold is not None and score > threshold:
+            # Alerting semantics: a threshold keeps the countries AT OR ABOVE
+            # it (the previous behaviour kept the ones below, which is the
+            # opposite of what "show me risk above X" means).
+            if threshold is not None and score < threshold:
                 continue
 
             base = float(row.risk_score_calculated) if row.risk_score_calculated is not None else None

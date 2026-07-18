@@ -153,3 +153,66 @@ def test_get_predictions_uses_same_snapshot(app_module):
     scores = sorted((row["geo_code"], row["predicted_risk_score"]) for row in results)
 
     assert scores == [("DE", 80.0), ("FR", 70.0)]
+
+
+def _batch(run_id, prediction_date, geo_codes, score=10.0):
+    """Build one prediction batch (one row per geo code)."""
+    return [
+        {
+            "date": datetime(2024, 1, 1),
+            "geo_code": geo,
+            "risk_score_calculated": 5.0,
+            "prediction_target_month": datetime(2024, 2, 1),
+            "predicted_risk_score": score,
+            "model_id": 1,
+            "prediction_date": prediction_date,
+            "run_id": run_id,
+        }
+        for geo in geo_codes
+    ]
+
+
+def test_newer_run_wins_when_reasonably_complete(app_module):
+    """A fresh batch missing one country out of ten must beat an older full batch."""
+    engine = app_module.engine
+    geos = ["AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FR"]
+
+    insert_predictions(
+        engine,
+        _batch("run-old-full", datetime(2024, 3, 1), geos, score=20.0)
+        + _batch("run-new-minus-one", datetime(2024, 4, 1), geos[:-1], score=30.0),
+    )
+
+    results = app_module.get_predictions()
+    assert {row["predicted_risk_score"] for row in results} == {30.0}
+    assert len(results) == 9
+
+
+def test_incomplete_newer_run_does_not_shadow_full_one(app_module):
+    """A degenerate fresh batch (far below the completeness ratio) must lose."""
+    engine = app_module.engine
+    geos = ["AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FR"]
+
+    insert_predictions(
+        engine,
+        _batch("run-old-full", datetime(2024, 3, 1), geos, score=20.0)
+        + _batch("run-new-degenerate", datetime(2024, 4, 1), geos[:2], score=30.0),
+    )
+
+    results = app_module.get_predictions()
+    assert {row["predicted_risk_score"] for row in results} == {20.0}
+    assert len(results) == 10
+
+
+def test_threshold_keeps_scores_at_or_above(app_module):
+    """?threshold= follows alerting semantics: keep the risky countries."""
+    engine = app_module.engine
+
+    insert_predictions(
+        engine,
+        _batch("run-a", datetime(2024, 3, 1), ["FR"], score=80.0)
+        + _batch("run-a", datetime(2024, 3, 1), ["DE"], score=20.0),
+    )
+
+    results = app_module.get_current_risk(threshold=50.0, horizon=None)
+    assert [(r["geo_code"], r["risk_score"]) for r in results] == [("FR", 80.0)]
