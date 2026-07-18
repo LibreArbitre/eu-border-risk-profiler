@@ -91,14 +91,22 @@ def _run_healthcheck() -> int:
     return 0
 
 
-# Database connection
-def get_db_engine():
-    db_host = os.getenv("DB_HOST", "db")
-    db_user = os.getenv("DB_USER", "user")
-    db_pass = os.getenv("DB_PASSWORD", "password")
-    db_name = os.getenv("DB_NAME", "eubrp_db")
+# Database connection. Memoised: every function used to create its own
+# Engine (save_to_db even did so once per chunk), each holding pooled
+# connections until garbage collection. One Engine per process reuses the
+# pool as SQLAlchemy intends.
+_ENGINE = None
 
-    return create_engine(f"postgresql://{db_user}:{db_pass}@{db_host}:5432/{db_name}")
+
+def get_db_engine():
+    global _ENGINE
+    if _ENGINE is None:
+        db_host = os.getenv("DB_HOST", "db")
+        db_user = os.getenv("DB_USER", "user")
+        db_pass = os.getenv("DB_PASSWORD", "password")
+        db_name = os.getenv("DB_NAME", "eubrp_db")
+        _ENGINE = create_engine(f"postgresql://{db_user}:{db_pass}@{db_host}:5432/{db_name}")
+    return _ENGINE
 
 
 def init_meta_table():

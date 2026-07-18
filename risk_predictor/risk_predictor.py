@@ -83,8 +83,17 @@ model_registry_table = Table(
 )
 
 
+# Memoised: get_data_from_db runs inside the fresh-data wait loop (up to 60
+# iterations) and used to build a new Engine, and thus new pooled
+# connections, on every call. One Engine per process reuses the pool.
+_ENGINE = None
+
+
 def get_db_engine():
-    return create_engine(DATABASE_URL)
+    global _ENGINE
+    if _ENGINE is None:
+        _ENGINE = create_engine(DATABASE_URL)
+    return _ENGINE
 
 
 def configure_logging():
