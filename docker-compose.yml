@@ -101,6 +101,8 @@ services:
       context: ./api_service
       dockerfile: Dockerfile
     container_name: eu_brp_api
+    # Service résident : doit revenir automatiquement après un reboot de l'hôte.
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
@@ -128,6 +130,8 @@ services:
       context: ./api_service
       dockerfile: Dockerfile
     container_name: eu_brp_dashboard
+    # Service résident : doit revenir automatiquement après un reboot de l'hôte.
+    restart: unless-stopped
     depends_on:
       api_service:
         condition: service_healthy
