@@ -1,4 +1,4 @@
-# ADR-006 — Per-capita, smoothed risk score
+# ADR-006: Per-capita, smoothed risk score
 
 - **Status:** Accepted
 - **Date:** 2026-11-16
