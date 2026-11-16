@@ -84,10 +84,10 @@ people applying.
 
 **Known limitations.** Reporting lag means the most recent month is
 often understated and the predictor automatically drops a country's
-last month if it would otherwise read as zero. The per-nationality
-breakdown keeps ISO-2 citizenship codes only; the derived `TOTAL` row
-therefore excludes stateless and unknown citizenships and can read
-slightly below Eurostat's own aggregate. Forecasts at M+2 and M+3 are
+last month if it would otherwise read as zero. Member States report at
+different speeds, so the latest available month differs between
+countries; a month that is not published yet is left out and never
+counted as zero. Forecasts at M+2 and M+3 are
 autoregressive and inherit M+1's error.
 
 **Citation.**

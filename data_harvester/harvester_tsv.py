@@ -23,6 +23,12 @@ HEALTH_FILE = os.getenv("HARVESTER_HEALTH_FILE", "/tmp/harvester_health")
 HEALTH_MAX_AGE_SECONDS = int(os.getenv("HARVESTER_HEALTH_MAX_AGE_SECONDS", str(25 * 3600)))
 STAGING_TABLE = "asylum_data_staging"
 
+# Bump whenever the parsing or filtering rules change what ends up in
+# asylum_data. The version is stored with the Eurostat freshness marker, so
+# a deployment that changes the rules re-harvests on its own instead of
+# trusting rows written by the previous logic.
+HARVEST_FORMAT_VERSION = "2"
+
 # Network retry policy. In one-shot mode the harvester runs once a month: a
 # transient Eurostat hiccup at that exact moment would otherwise skip the
 # whole month's refresh, so the download and the metadata probe both retry
@@ -324,17 +330,7 @@ def process_and_save_chunked(tsv_path, chunk_size=100000):
             dimensions.columns = ["freq", "unit", "citizen", "sex", "applicant", "age", "geo"]
 
             # ==== Filtrage avant melt (économise mémoire et CPU) ====
-            # 1. Type de demandeur — first-time applicants only
-            frst_mask = dimensions["applicant"] == "FRST"
-            # 2. Géographie — restreint à l'UE-27
-            eu_mask = dimensions["geo"].isin(EU_COUNTRIES)
-            # 3. Nationalité — on ne garde que les codes ISO-3166 alpha-2
-            #    (deux lettres majuscules), ce qui élimine les codes
-            #    pré-agrégés de Eurostat (TOTAL, EU27_2020, EXT_EU27_2020,
-            #    STLS, NAT, UNK, …). On dérive nous-mêmes la ligne TOTAL
-            #    plus bas afin d'avoir une définition unique et cohérente.
-            citizen_mask = dimensions["citizen"].str.match(r"^[A-Z]{2}$", na=False)
-            valid_mask = frst_mask & eu_mask & citizen_mask
+            valid_mask = select_rows(dimensions, EU_COUNTRIES)
 
             filtered_count = valid_mask.sum()
             if filtered_count == 0:
@@ -342,7 +338,8 @@ def process_and_save_chunked(tsv_path, chunk_size=100000):
                 continue
 
             logging.info(
-                f"Chunk {i + 1}: Filtered to {filtered_count} rows (FRST + EU + ISO-2 citizen)"
+                f"Chunk {i + 1}: Filtered to {filtered_count} rows "
+                "(FRST + EU + all sexes + all ages + ISO-2 or TOTAL citizen)"
             )
 
             # Appliquer le filtre au DataFrame original
@@ -362,17 +359,13 @@ def process_and_save_chunked(tsv_path, chunk_size=100000):
             # Les colonnes de dates sont tout sauf les colonnes de dimensions.
             date_cols = [c for c in df_filtered.columns if c not in ["geo", "citizen", "applicant"]]
 
-            # Convertir les valeurs en numériques (gérer les ': ' et espaces)
+            # Valeurs numériques ; une cellule non publiée (":") reste NaN.
             for col in date_cols:
-                df_filtered[col] = df_filtered[col].str.replace(r"[^0-9.]", "", regex=True)
-                df_filtered[col] = pd.to_numeric(df_filtered[col], errors="coerce").fillna(0).astype(int)
+                df_filtered[col] = parse_values(df_filtered[col])
 
             df_final = aggregate_chunk_to_long(df_filtered, date_cols)
-            n_geos = df_final.loc[df_final["citizen_code"] != "TOTAL", "geo_code"].nunique()
-            logging.info(
-                f"Chunk {i + 1}: Aggregated to {len(df_final)} rows "
-                f"({n_geos} geos × per-citizen + TOTAL)"
-            )
+            n_geos = df_final["geo_code"].nunique()
+            logging.info(f"Chunk {i + 1}: Aggregated to {len(df_final)} published values ({n_geos} geos)")
 
             # Select final columns
             final_cols = ["date", "geo_code", "citizen_code", "applicant_type", "total_applications"]
@@ -463,37 +456,65 @@ def promote_staging_to_production():
 SAVE_BATCH_SIZE = 5000
 
 
-def aggregate_chunk_to_long(df_dim_wide: pd.DataFrame, date_cols: list) -> pd.DataFrame:
-    """Aggregate a filtered wide-format chunk into a long-format frame.
+def select_rows(dimensions: pd.DataFrame, eu_countries) -> pd.Series:
+    """Boolean mask of the TSV rows the project keeps.
 
-    Input is a chunk that has already been filtered to FRST + EU + ISO-2
-    citizen rows and has columns ``geo``, ``citizen``, ``applicant`` plus
-    the date columns listed in ``date_cols``. Sex and age dimensions are
-    expected to still be present implicitly (multiple rows per
-    geo/citizen combination); this function collapses them via the
-    groupby step.
+    The bulk file carries one row per combination of every dimension,
+    INCLUDING the pre-aggregated ones: ``sex`` has ``T`` (total) next to
+    ``M``/``F``/``UNK`` and ``age`` has ``TOTAL`` next to every age band
+    (and ``Y_LT18`` next to its two sub-bands). Summing all rows of a
+    (geo, citizen) pair therefore counts each applicant four to five times.
+    Only the ``sex=T`` / ``age=TOTAL`` row is the real figure.
+
+    Citizenship keeps the ISO-3166 alpha-2 codes for the per-nationality
+    breakdown plus Eurostat's own ``TOTAL`` row, which is the official
+    country-level figure (it includes stateless and unknown citizenships,
+    which a sum of the alpha-2 rows would miss).
+    """
+    citizen = dimensions["citizen"]
+    return (
+        (dimensions["applicant"] == "FRST")
+        & dimensions["geo"].isin(eu_countries)
+        & (dimensions["sex"] == "T")
+        & (dimensions["age"] == "TOTAL")
+        & (citizen.str.match(r"^[A-Z]{2}$", na=False) | (citizen == "TOTAL"))
+    )
+
+
+def parse_values(cells: pd.Series) -> pd.Series:
+    """Turn raw TSV cells into numbers, keeping "not published" as NaN.
+
+    Cells look like ``"8665"``, ``"8665 p"`` (flagged) or ``": "`` (not
+    available). A missing cell must NOT become 0: a month a Member State
+    has not reported yet is unknown, and storing 0 made such countries
+    look like their applications had collapsed.
+    """
+    digits = cells.astype(str).str.replace(r"[^0-9.]", "", regex=True)
+    return pd.to_numeric(digits, errors="coerce")
+
+
+def aggregate_chunk_to_long(df_dim_wide: pd.DataFrame, date_cols: list) -> pd.DataFrame:
+    """Reshape a filtered wide-format chunk into a long-format frame.
+
+    Input is a chunk already reduced by ``select_rows`` (one row per
+    (geo, citizen), ``TOTAL`` included) with columns ``geo``, ``citizen``,
+    ``applicant`` plus the date columns listed in ``date_cols``, parsed by
+    ``parse_values``.
 
     Output columns: ``date``, ``geo_code``, ``citizen_code``,
-    ``applicant_type``, ``total_applications``. A ``citizen_code='TOTAL'``
-    row is emitted for every (date, geo) tuple, derived by summing across
-    nationalities so that the TOTAL is internally consistent with the
-    per-nationality rows in the same row set.
+    ``applicant_type``, ``total_applications``. Only published values are
+    emitted: a NaN cell produces no row, a genuine 0 does.
 
-    Pure function (no I/O) — covered by unit tests.
+    Pure function (no I/O), covered by unit tests.
     """
+    columns = ["date", "geo_code", "citizen_code", "applicant_type", "total_applications"]
     if df_dim_wide.empty or not date_cols:
-        return pd.DataFrame(
-            columns=["date", "geo_code", "citizen_code", "applicant_type", "total_applications"]
-        )
+        return pd.DataFrame(columns=columns)
 
-    df_per_citizen = df_dim_wide.groupby(["geo", "citizen"])[date_cols].sum().reset_index()
-    df_per_citizen["applicant"] = "FRST"
-
-    df_total = df_per_citizen.groupby("geo")[date_cols].sum().reset_index()
-    df_total["citizen"] = "TOTAL"
-    df_total["applicant"] = "FRST"
-
-    df_agg = pd.concat([df_per_citizen, df_total], ignore_index=True)
+    # One row per (geo, citizen) is expected; min_count keeps an all-missing
+    # cell missing instead of turning it into 0 if duplicates ever show up.
+    df_agg = df_dim_wide.groupby(["geo", "citizen"])[date_cols].sum(min_count=1).reset_index()
+    df_agg["applicant"] = "FRST"
 
     df_long = df_agg.melt(
         id_vars=["geo", "citizen", "applicant"],
@@ -502,15 +523,14 @@ def aggregate_chunk_to_long(df_dim_wide: pd.DataFrame, date_cols: list) -> pd.Da
     )
     df_long = df_long[df_long["date_raw"].str.match(r"^\d{4}-\d{2}$", na=False)]
     df_long["date"] = pd.to_datetime(df_long["date_raw"] + "-01", format="%Y-%m-%d", errors="coerce")
-    df_long = df_long.dropna(subset=["date"])
+    df_long = df_long.dropna(subset=["date", "total_applications"])
+    df_long["total_applications"] = df_long["total_applications"].astype(int)
 
     df_final = df_long.rename(
         columns={"geo": "geo_code", "citizen": "citizen_code", "applicant": "applicant_type"}
     )
 
-    return df_final[
-        ["date", "geo_code", "citizen_code", "applicant_type", "total_applications"]
-    ].reset_index(drop=True)
+    return df_final[columns].reset_index(drop=True)
 
 
 def save_to_db(df):
@@ -574,11 +594,13 @@ def run_harvest():
         logging.info("Probing Eurostat metadata...")
         remote_updated = get_remote_updated_at()
         local_updated = get_local_last_modified()
+        format_suffix = f"|fmt{HARVEST_FORMAT_VERSION}"
+        remote_marker = f"{remote_updated}{format_suffix}" if remote_updated else None
 
         logging.info(f"Remote updated: {remote_updated}")
         logging.info(f"Local updated:  {local_updated}")
 
-        if remote_updated and remote_updated == local_updated:
+        if remote_marker and remote_marker == local_updated:
             # Touch the health file so a quiet day doesn't make us look stale
             # to the docker healthcheck — we DID check, we just had nothing
             # to do. asylum_data is unchanged from the previous successful
@@ -588,7 +610,7 @@ def run_harvest():
             logging.info("=" * 60)
             return
 
-        if remote_updated is None and local_updated is not None:
+        if remote_updated is None and local_updated is not None and local_updated.endswith(format_suffix):
             # The metadata probe failed (timeout, 5xx, schema change…) but we
             # already have a previously stored marker. Don't waste 6-8 min of
             # CPU + 440 MB of bandwidth chasing a remote freshness signal we
@@ -616,9 +638,9 @@ def run_harvest():
         promote_staging_to_production()
 
         # 3. Persister le timestamp de fraîcheur pour le prochain cycle.
-        if remote_updated:
-            update_local_last_modified(remote_updated)
-            logging.info(f"Updated local freshness marker to: {remote_updated}")
+        if remote_marker:
+            update_local_last_modified(remote_marker)
+            logging.info(f"Updated local freshness marker to: {remote_marker}")
 
         _touch_health_file()
         logging.info("=" * 60)
