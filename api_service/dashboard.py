@@ -356,6 +356,10 @@ if not df_pred.empty:
         agg_spec["predicted_risk_score_p10"] = "mean"
     if "predicted_risk_score_p90" in merged.columns:
         agg_spec["predicted_risk_score_p90"] = "mean"
+    # Inputs of the score for the reference month, when the API provides them.
+    for optional in ("applications_per_100k", "trend_3m"):
+        if optional in merged.columns:
+            agg_spec[optional] = "first"
 
     df_map = merged.groupby("geo_code").agg(agg_spec).reset_index()
     df_map["risk_score"] = df_map["predicted_risk_score"]
@@ -523,14 +527,17 @@ with col_ranking:
     section_title(t("section.ranking"))
 
     if valid_data:
-        ranking = df_map[["geo_code", "risk_score"]].copy()
+        ranking = df_map[["geo_code", "risk_score", "date"]].copy()
         ranking = ranking.sort_values("risk_score", ascending=False)
         ranking["Country"] = ranking["geo_code"].map(country_name)
-        ranking = ranking.reset_index(drop=True)
-        ranking.columns = ["Code", "Score", "Country"]
+        # Member States report at different speeds: show which month each
+        # country's figures stop at, so rows are not read as simultaneous.
+        ranking["Ref"] = ranking["date"].dt.strftime("%Y-%m")
+        ranking = ranking.drop(columns=["date"]).reset_index(drop=True)
+        ranking.columns = ["Code", "Score", "Country", "Ref"]
         ranking.index = ranking.index + 1
 
-        final_ranking = ranking[["Country", "Score"]]
+        final_ranking = ranking[["Country", "Score", "Ref"]]
 
         # Click-to-select: when the user picks a row, propagate the
         # underlying geo_code into st.session_state["deep_dive_geo"] BEFORE
@@ -550,6 +557,7 @@ with col_ranking:
                     min_value=0,
                     max_value=100,
                 ),
+                "Ref": st.column_config.TextColumn(t("ranking.ref_month"), width="small"),
             },
             on_select="rerun",
             selection_mode="single-row",
@@ -628,30 +636,36 @@ if valid_data:
         with col_stats:
             row = df_map[df_map["geo_code"] == selected_code].iloc[0]
 
-            band_html = ""
-            p10 = row.get("predicted_risk_score_p10") if hasattr(row, "get") else None
-            p90 = row.get("predicted_risk_score_p90") if hasattr(row, "get") else None
-            if (
-                p10 is not None
-                and p90 is not None
-                and not pd.isna(p10)
-                and not pd.isna(p90)
-            ):
-                band_html = (
-                    f'<div class="metric-sub">'
-                    f"P10–P90 : {float(p10):.1f} – {float(p90):.1f}"
-                    f"</div>"
-                )
+            def _number(key):
+                value = row.get(key)
+                return None if value is None or pd.isna(value) else float(value)
+
+            # Main figure: the score of the last published month. The forecast
+            # (average of M+1 to M+3) sits on its own line with its band.
+            current = _number("risk_score_calculated")
+            forecast = _number("risk_score")
+            p10 = _number("predicted_risk_score_p10")
+            p90 = _number("predicted_risk_score_p90")
+            rate = _number("applications_per_100k")
+            trend = _number("trend_3m")
+
+            sub_lines = []
+            if rate is not None:
+                sub_lines.append(f"{rate:.1f} {t('deep_dive.rate_label')}")
+            if trend is not None:
+                sub_lines.append(f"{t('deep_dive.trend_label')} : {trend * 100:+.0f} %")
+            if forecast is not None:
+                band = f" (P10-P90 : {p10:.1f} - {p90:.1f})" if p10 is not None and p90 is not None else ""
+                sub_lines.append(f"{t('deep_dive.forecast_label')} : {forecast:.1f}{band}")
+            sub_lines.append(f"{t('deep_dive.assessment_prefix')} {row['date'].strftime('%b %Y')}")
+            sub_html = "".join(f'<div class="metric-sub">{line}</div>' for line in sub_lines)
 
             st.markdown(
                 f"""
                 <div class="metric-card">
                     <div class="metric-label">{t("deep_dive.current_label")}</div>
-                    <div class="metric-value">{row["risk_score"]:.1f}</div>
-                    {band_html}
-                    <div class="metric-sub">
-                        {t("deep_dive.assessment_prefix")} {row["date"].strftime("%b %Y")}
-                    </div>
+                    <div class="metric-value">{(current if current is not None else forecast):.1f}</div>
+                    {sub_html}
                 </div>
                 """,
                 unsafe_allow_html=True,

@@ -123,11 +123,13 @@ def _select_best_snapshot(conn) -> Optional[Dict[str, Any]]:
 
 
 def _fetch_snapshot_rows(conn, run_id: str):
+    # SELECT * on purpose: optional columns (quantiles, per-capita rate, trend)
+    # are added by the predictor's own idempotent migration, which may run
+    # after this service starts on an upgraded deployment. Callers read them
+    # with getattr(..., None) so a not-yet-migrated table still answers.
     query = text(
         """
-        SELECT geo_code, date, prediction_target_month,
-               risk_score_calculated, predicted_risk_score,
-               predicted_risk_score_p10, predicted_risk_score_p90
+        SELECT *
         FROM risk_predictions
         WHERE run_id = :run_id AND predicted_risk_score IS NOT NULL
         ORDER BY geo_code, prediction_target_month
@@ -215,6 +217,9 @@ def get_current_risk(
                     "risk_score": score,
                     "risk_score_p10": _maybe_float(getattr(row, "predicted_risk_score_p10", None)),
                     "risk_score_p90": _maybe_float(getattr(row, "predicted_risk_score_p90", None)),
+                    "applications_per_100k": _maybe_float(getattr(row, "applications_per_100k", None)),
+                    "trend_3m": _maybe_float(getattr(row, "trend_3m", None)),
+                    "reference_month": row.date,
                     "prediction_target_month": row.prediction_target_month,
                     "horizon_months": int(horizon_months),
                     "percent_change": pct_change,
@@ -262,6 +267,8 @@ def get_predictions():
                 "predicted_risk_score": float(r.predicted_risk_score),
                 "predicted_risk_score_p10": _maybe_float(getattr(r, "predicted_risk_score_p10", None)),
                 "predicted_risk_score_p90": _maybe_float(getattr(r, "predicted_risk_score_p90", None)),
+                "applications_per_100k": _maybe_float(getattr(r, "applications_per_100k", None)),
+                "trend_3m": _maybe_float(getattr(r, "trend_3m", None)),
                 "date": r.date,
                 "prediction_target_month": r.prediction_target_month,
                 "type": "predicted",

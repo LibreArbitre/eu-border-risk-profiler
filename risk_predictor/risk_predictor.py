@@ -56,8 +56,45 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL", f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
 
-MODEL_NAME = "random_forest_risk"
-MODEL_HYPERPARAMS = {"n_estimators": 50, "random_state": 42}
+# The model predicts the month-over-month CHANGE of the score, not its level
+# (see FEATURES / TARGET below). The name differs from the earlier level
+# model so its artifacts, which expect other features, are never loaded.
+MODEL_NAME = "random_forest_risk_delta"
+MODEL_HYPERPARAMS = {"n_estimators": 50, "random_state": 42, "min_samples_leaf": 5}
+
+# Model inputs and output. The smoothed score is highly persistent, and a
+# forest trained on its level cannot extrapolate and loses to "same as last
+# month". Trained on the change, it adds a small but real edge over that
+# naive baseline, which is logged and stored with every retrain.
+FEATURES = ["lag_1", "delta_1", "month"]
+TARGET = "delta"
+
+# --- Score definition -------------------------------------------------------
+# Bump when the formula or its constants change: the version is part of the
+# model cache signature, so every cached model is retrained.
+SCORE_VERSION = "2"
+# Applications are averaged over this many months before anything else. A
+# single month is dominated by noise for small Member States and by late
+# reporting for all of them.
+SMOOTHING_MONTHS = 3
+# The trend compares the smoothed volume with the one SMOOTHING_MONTHS
+# earlier, is clipped to +/- TREND_CLIP, and moves the score by at most
+# TREND_WEIGHT * TREND_CLIP (25%) either way.
+TREND_CLIP = 0.5
+TREND_WEIGHT = 0.5
+
+# Resident population on 1 January 2026, Eurostat table tps00001 (extracted
+# 2026-11-16). Used to express pressure per 100,000 inhabitants. Population
+# moves by a few percent a decade, so one reference year is applied to the
+# whole history; refresh the table when a new year is published.
+POPULATION = {
+    "AT": 9215956, "BE": 11955308, "BG": 6423207, "CY": 996571, "CZ": 10915839,
+    "DE": 83467117, "DK": 6025603, "EE": 1360745, "EL": 10366586, "ES": 49590099,
+    "FI": 5652881, "FR": 69112309, "HR": 3876002, "HU": 9488428, "IE": 5510565,
+    "IT": 58942828, "LT": 2887592, "LU": 690959, "LV": 1845096, "MT": 588254,
+    "NL": 18130208, "PL": 36332765, "PT": 11424031, "RO": 19041322, "SE": 10605529,
+    "SI": 2135107, "SK": 5409407,
+}
 MODEL_MAX_AGE_DAYS = int(os.getenv("MODEL_MAX_AGE_DAYS", "30"))
 DRIFT_TOLERANCE = float(os.getenv("DRIFT_TOLERANCE", "0.15"))
 # Fraction of the most recent observations held out for honest evaluation. The
@@ -199,9 +236,60 @@ def persist_model(engine, geo_code, model, metadata=None):
 
 
 def train_model(train_df):
+    """Fit the forest on plain arrays so inference never trips sklearn's
+    feature-name checks (per-tree prediction passes arrays too)."""
     model = RandomForestRegressor(**MODEL_HYPERPARAMS)
-    model.fit(train_df[["lag_1", "lag_2", "lag_3", "month"]], train_df["risk_score"])
+    model.fit(train_df[FEATURES].to_numpy(dtype=float), train_df[TARGET].to_numpy(dtype=float))
     return model
+
+
+def compute_rate_frame(group: pd.DataFrame, population: float) -> pd.DataFrame:
+    """Monthly pressure indicators for one Member State.
+
+    Returns one row per calendar month between the first and last published
+    month, with ``total_applications`` (NaN where nothing was published),
+    ``rate_per_100k`` (smoothed applications per 100,000 inhabitants) and
+    ``trend`` (relative change of the smoothed volume over
+    ``SMOOTHING_MONTHS``, clipped to +/- ``TREND_CLIP``).
+
+    Pure function, covered by unit tests.
+    """
+    series = group.sort_values("date").set_index("date")["total_applications"].astype(float)
+    series = series[~series.index.duplicated(keep="last")].asfreq("MS")
+
+    # Reporting lag: a trailing 0 right after a substantial month is a
+    # country that has not filed yet, not a collapse.
+    if len(series) >= 2 and series.iloc[-1] == 0 and series.iloc[-2] > 100:
+        series = series.iloc[:-1]
+
+    smoothed = series.rolling(SMOOTHING_MONTHS, min_periods=SMOOTHING_MONTHS).mean()
+    previous = smoothed.shift(SMOOTHING_MONTHS)
+    relative_change = smoothed / previous.where(previous > 0) - 1
+    # Rising from nothing has no ratio: count it as the maximum rise.
+    relative_change = relative_change.where(previous != 0, np.where(smoothed > 0, TREND_CLIP, 0.0))
+    trend = relative_change.clip(-TREND_CLIP, TREND_CLIP).fillna(0.0)
+
+    frame = pd.DataFrame(
+        {
+            "total_applications": series,
+            "rate_per_100k": smoothed / population * 100_000,
+            "trend": trend,
+        }
+    )
+    return frame.rename_axis("date").reset_index()
+
+
+def add_score(frame: pd.DataFrame, reference_log: float) -> pd.DataFrame:
+    """Add the 0-100 ``risk_score`` to a frame built by ``compute_rate_frame``.
+
+    The rate is log-scaled against the highest rate ever observed in the EU
+    (``reference_log``), so one exceptional episode does not flatten every
+    other value, then modulated by the trend.
+    """
+    frame = frame.copy()
+    level = np.log1p(frame["rate_per_100k"]) / reference_log
+    frame["risk_score"] = (level * (1 + TREND_WEIGHT * frame["trend"]) * 100).clip(lower=0, upper=100)
+    return frame
 
 
 def compute_data_signature(train_df: pd.DataFrame, context: str | None = None) -> str:
@@ -240,10 +328,8 @@ def evaluate_model(train_df: pd.DataFrame, model) -> float | None:
     if model is None:
         return None
     try:
-        features = train_df[["lag_1", "lag_2", "lag_3", "month"]]
-        target = train_df["risk_score"]
-        preds = model.predict(features)
-        return float(np.mean(np.abs(preds - target)))
+        preds = model.predict(train_df[FEATURES].to_numpy(dtype=float))
+        return float(np.mean(np.abs(preds - train_df[TARGET].to_numpy(dtype=float))))
     except Exception:
         logging.exception("Failed to evaluate model performance")
         return None
@@ -317,18 +403,32 @@ def temporal_split(train_df: pd.DataFrame, test_ratio: float = HOLDOUT_TEST_RATI
 def evaluate_model_holdout(test_df: pd.DataFrame, model) -> float | None:
     """MAE on a hold-out frame the model has *not* seen.
 
+    The model predicts the change of the score; since the forecast is
+    ``previous score + predicted change``, the error on the change equals
+    the error on the score itself, in score points.
+
     Returns ``None`` if the test frame is empty/None or evaluation fails.
     """
     if model is None or test_df is None or len(test_df) == 0:
         return None
     try:
-        features = test_df[["lag_1", "lag_2", "lag_3", "month"]]
-        target = test_df["risk_score"]
-        preds = model.predict(features)
-        return float(np.mean(np.abs(preds - target)))
+        preds = model.predict(test_df[FEATURES].to_numpy(dtype=float))
+        return float(np.mean(np.abs(preds - test_df[TARGET].to_numpy(dtype=float))))
     except Exception:
         logging.exception("Failed to evaluate model on hold-out")
         return None
+
+
+def naive_holdout_mae(test_df: pd.DataFrame) -> float | None:
+    """MAE of the "same as last month" forecast on a hold-out frame.
+
+    Predicting no change means the error is the absolute change itself.
+    This is the yardstick every retrain is logged against: a model that
+    does not beat it adds nothing.
+    """
+    if test_df is None or len(test_df) == 0:
+        return None
+    return float(np.mean(np.abs(test_df[TARGET].to_numpy(dtype=float))))
 
 
 def log_model_drift(old_mae: float | None, new_mae: float | None, geo_code: str):
@@ -386,9 +486,11 @@ def get_or_train_model(
     # drift detection.
     old_test_mae = evaluate_model_holdout(test_part, model) if (model and has_holdout) else None
     candidate_test_mae = None
+    naive_test_mae = None
     if has_holdout:
         candidate = train_model(train_part)
         candidate_test_mae = evaluate_model_holdout(test_part, candidate)
+        naive_test_mae = naive_holdout_mae(test_part)
 
     # The deployed model is fit on the FULL training set so we don't waste
     # the most recent signal at inference time.
@@ -406,6 +508,8 @@ def get_or_train_model(
     if candidate_test_mae is not None:
         metadata_payload["test_mae"] = candidate_test_mae
         metadata_payload["test_size"] = len(test_part)
+    if naive_test_mae is not None:
+        metadata_payload["naive_test_mae"] = naive_test_mae
     if old_test_mae is not None:
         metadata_payload["prev_test_mae"] = old_test_mae
     model_id = persister(engine, geo_code, model, metadata_payload)
@@ -426,7 +530,38 @@ def get_or_train_model(
         "data_signature": data_signature,
         "train_mae": new_mae,
         "test_mae": candidate_test_mae,
+        "naive_test_mae": naive_test_mae,
     }
+
+
+def build_score_frames(df: pd.DataFrame, population=None) -> tuple[dict, float]:
+    """Compute the scored monthly frame of every Member State.
+
+    Returns ``(frames, reference_log)`` where ``frames`` maps a geo code to
+    its frame (see ``compute_rate_frame`` / ``add_score``) and
+    ``reference_log`` is the log of the highest smoothed rate ever observed
+    across the EU, the common scale of the score.
+
+    Countries without a population figure are skipped with a warning: a
+    per-capita score cannot be computed for them.
+    """
+    population = POPULATION if population is None else population
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+
+    rate_frames = {}
+    for geo, group in df.groupby("geo_code"):
+        if geo not in population:
+            logging.warning("No population figure for %s; skipping it", geo)
+            continue
+        rate_frames[geo] = compute_rate_frame(group, population[geo])
+
+    max_rate = max(
+        (frame["rate_per_100k"].max() for frame in rate_frames.values() if frame["rate_per_100k"].notna().any()),
+        default=0.0,
+    )
+    reference_log = float(np.log1p(max_rate)) if max_rate > 0 else 1.0
+    return {geo: add_score(frame, reference_log) for geo, frame in rate_frames.items()}, reference_log
 
 
 def calculate_risk_and_predict(df, engine):
@@ -434,72 +569,29 @@ def calculate_risk_and_predict(df, engine):
         return pd.DataFrame()
 
     predictions = []
+    frames, reference_log = build_score_frames(df)
+    logging.info("Score reference: highest smoothed rate log1p=%.4f", reference_log)
 
-    # Ensure date is datetime
-    df["date"] = pd.to_datetime(df["date"])
+    # Every country's training target depends on the formula version and on
+    # the EU-wide reference, so both belong in each model's cache signature:
+    # a new all-time peak rescales every target even where the country's own
+    # series did not change.
+    signature_context = f"score_v{SCORE_VERSION}|reference_log={reference_log:.12f}"
 
-    # Calculate Global Max Volume for normalization (User Request: Global consistency)
-    global_max_vol = df["total_applications"].max()
-    if global_max_vol == 0:
-        global_max_vol = 1
-    # Logarithmic Scale for Global Max (to handle 2015 crisis outlier)
-    global_max_log = np.log1p(global_max_vol)
-    logging.info("Global Max Volume: %s (Log1p: %s)", global_max_vol, global_max_log)
-
-    # The risk_score target of EVERY country is normalised against this
-    # global constant, so it must be part of each model's cache signature:
-    # a new all-time peak rescales every training target even where the
-    # country's own series did not change.
-    signature_context = f"global_max_log={global_max_log:.12f}"
-
-    for geo, group in df.groupby("geo_code"):
-        if len(group) < 12:
-            # Need some history for lags
+    for geo, frame in frames.items():
+        scored = frame.dropna(subset=["risk_score"]).copy()
+        if len(scored) < 12:
+            # Not enough history to learn anything from.
             continue
 
-        group = group.sort_values("date")
+        # --- Model features: last score, its last change, calendar month ---
+        scored["lag_1"] = scored["risk_score"].shift(1)
+        scored["delta_1"] = scored["lag_1"] - scored["risk_score"].shift(2)
+        scored[TARGET] = scored["risk_score"] - scored["lag_1"]
+        scored["month"] = scored["date"].dt.month
 
-        # --- 0. Data Cleaning (Handle Data Lag) ---
-        # If the last month is 0 but previous month was significant, it's likely missing data (not real 0).
-        # Eurostat often publishes the column for the new month before all countries report.
-        if not group.empty:
-            last_val = group["total_applications"].iloc[-1]
-            prev_val = group["total_applications"].iloc[-2] if len(group) > 1 else 0
-
-            if last_val == 0 and prev_val > 100:
-                logging.info(f"Dropping last month for {geo} (Likely missing data: {prev_val} -> {last_val})")
-                group = group.iloc[:-1]
-
-        # --- 1. Calculate Risk Score ---
-        # Features for Score
-        # Variation calculation
-        group["prev_total"] = group["total_applications"].shift(1)
-        group["variation"] = (group["total_applications"] - group["prev_total"]) / (group["prev_total"].replace(0, 1))
-
-        # Normalize volume (0 to 1) against GLOBAL MAX using LOG SCALE
-        # This prevents the 2015 crisis (1.3M) from crushing all current scores to 0.
-        # Spain (128k) -> ~0.85, DE (27k) -> ~0.72, EL (4k) -> ~0.59
-        group["vol_norm"] = np.log1p(group["total_applications"]) / global_max_log
-
-        # Formula: Multiplicative approach (Volume * Trend)
-        # Base score is the normalized volume (0-100 equivalent)
-        # We modulate it by the trend : * (1 + variation)
-
-        group["risk_score"] = group["vol_norm"] * (1 + group["variation"]) * 100
-
-        # Cap at 100 and floor at 0
-        group["risk_score"] = group["risk_score"].clip(lower=0, upper=100)
-        group["risk_score"] = group["risk_score"].fillna(0)
-
-        # --- 2. Predict ---
-        # Prepare Features
-        group["lag_1"] = group["risk_score"].shift(1)
-        group["lag_2"] = group["risk_score"].shift(2)
-        group["lag_3"] = group["risk_score"].shift(3)
-        group["month"] = group["date"].dt.month
-
-        train_df = group.dropna()
-        if len(train_df) < 6:
+        train_df = scored.dropna(subset=FEATURES + [TARGET])
+        if len(train_df) < 12:
             continue
 
         model, model_id, model_info = get_or_train_model(
@@ -514,52 +606,43 @@ def calculate_risk_and_predict(df, engine):
             )
         else:
             logging.info(
-                "Model %s for %s retrained (signature=%s, train_mae=%s, test_mae=%s)",
+                "Model %s for %s retrained (signature=%s, test_mae=%s, naive_test_mae=%s)",
                 model_id,
                 geo,
                 model_info.get("data_signature", ""),
-                model_info.get("train_mae"),
                 model_info.get("test_mae"),
+                model_info.get("naive_test_mae"),
             )
 
-        # Predict for M+1, M+2, M+3 from the LAST available point
-        last_row = group.iloc[-1]
+        # Predict M+1, M+2, M+3 from the last published month of THIS country
+        # (Member States report at different speeds).
+        last_row = scored.iloc[-1]
         last_date = last_row["date"]
-        current_score = last_row["risk_score"]
-
-        # Lags for the first prediction: [Score(t), Score(t-1), Score(t-2)]
-        current_lags = [last_row["risk_score"], last_row["lag_1"], last_row["lag_2"]]
-
-        # We want to predict t+1.
-        # Features for t+1: lag_1=Score(t), lag_2=Score(t-1), lag_3=Score(t-2), month=Month(t+1)
+        current_score = float(last_row["risk_score"])
+        base = current_score
+        last_change = float(last_row[TARGET]) if pd.notna(last_row[TARGET]) else 0.0
 
         for i in range(1, 4):
             next_date = last_date + pd.DateOffset(months=i)
-            next_month = next_date.month
 
-            # Predict — pull per-tree predictions so we can report a P10/P90
-            # band alongside the point estimate. The point estimate is the
-            # mean across trees, which matches sklearn's default predict().
-            features = np.array([current_lags[0], current_lags[1], current_lags[2], next_month]).reshape(1, -1)
-            if np.isnan(features).any():
-                pred, p10, p90 = 0.0, None, None
-            else:
-                pred, p10, p90 = predict_with_quantiles(model, features)
-                if pred is None:
-                    pred, p10, p90 = 0.0, None, None
+            # The model returns the expected CHANGE; per-tree outputs give the
+            # P10/P90 band of that change, added to the previous step's value.
+            features = np.array([[base, last_change, next_date.month]], dtype=float)
+            change, change_low, change_high = predict_with_quantiles(model, features)
+            if change is None:
+                change, change_low, change_high = 0.0, None, None
 
-            # Cap predictions at 100 and floor at 0 for the score scale.
-            pred = max(0.0, min(100.0, pred))
-            if p10 is not None:
-                p10 = max(0.0, min(100.0, p10))
-            if p90 is not None:
-                p90 = max(0.0, min(100.0, p90))
+            pred = max(0.0, min(100.0, base + change))
+            p10 = max(0.0, min(100.0, base + change_low)) if change_low is not None else None
+            p90 = max(0.0, min(100.0, base + change_high)) if change_high is not None else None
 
             predictions.append(
                 {
                     "date": last_date.date(),
                     "geo_code": geo,
-                    "risk_score_calculated": float(current_score),
+                    "risk_score_calculated": current_score,
+                    "applications_per_100k": float(last_row["rate_per_100k"]),
+                    "trend_3m": float(last_row["trend"]),
                     "prediction_target_month": next_date.date(),
                     "predicted_risk_score": float(pred),
                     "predicted_risk_score_p10": float(p10) if p10 is not None else None,
@@ -568,9 +651,9 @@ def calculate_risk_and_predict(df, engine):
                 }
             )
 
-            # Shift lags
-            # New lags for t+2: [Pred(t+1), Score(t), Score(t-1)]
-            current_lags = [pred] + current_lags[:-1]
+            # Roll forward: the forecast becomes the base of the next step.
+            last_change = pred - base
+            base = pred
 
     return pd.DataFrame(predictions)
 
@@ -804,6 +887,10 @@ def ensure_predictions_schema(engine=None) -> None:
         "ADD COLUMN IF NOT EXISTS predicted_risk_score_p10 NUMERIC(5, 2)",
         "ALTER TABLE risk_predictions "
         "ADD COLUMN IF NOT EXISTS predicted_risk_score_p90 NUMERIC(5, 2)",
+        "ALTER TABLE risk_predictions "
+        "ADD COLUMN IF NOT EXISTS applications_per_100k NUMERIC(8, 2)",
+        "ALTER TABLE risk_predictions "
+        "ADD COLUMN IF NOT EXISTS trend_3m NUMERIC(6, 3)",
     ]
     try:
         with engine.begin() as conn:

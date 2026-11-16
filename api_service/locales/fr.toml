@@ -36,6 +36,7 @@ initializing = "⏳ Initialisation… en attente des données de prévision."
 [ranking]
 country = "Pays"
 risk_index = "Indice de risque"
+ref_month = "Données jusqu'à"
 no_data = "Pas de données disponibles."
 
 [deep_dive]
@@ -44,8 +45,11 @@ chart_title = "Historique des demandes"
 no_history = "Pas de données historiques."
 current_label = "Indice de risque actuel"
 assessment_prefix = "Évaluation basée sur les données jusqu'à"
+forecast_label = "Prévision, 3 prochains mois"
+rate_label = "demandes pour 100 000 habitants (moyenne sur 3 mois)"
+trend_label = "Tendance sur 3 mois"
 note_title = "Note méthodologique"
-note_body = "Le score de risque combine le volume — log-normalisé contre le pic historique de l'UE — et la variation mois-sur-mois la plus récente."
+note_body = "L'indice de risque rapporte les premières demandes à la population, en moyenne sur trois mois et sur une échelle logarithmique calée sur le taux le plus élevé jamais observé dans l'UE, puis l'ajuste de 25 % au plus selon la tendance sur trois mois."
 by_citizen_title = "Principales nationalités"
 by_citizen_slider = "Nombre de nationalités à afficher"
 by_citizen_chart_title = "Demandes par nationalité (cumulé)"
@@ -67,11 +71,15 @@ avant toute modélisation.
 
 **Ce que représente le score.** L'**indice de risque** est un
 indicateur 0-100 de la *pression administrative* exercée sur la
-procédure d'asile d'un État membre pour un mois donné, calculé comme
-`vol_norm × (1 + variation) × 100`, où `vol_norm` est le volume
-log-normalisé contre le pic historique de l'UE et `variation` est la
-variation mois-sur-mois. Une forêt aléatoire à 27 modèles (un par
-État membre) prédit le score sur les trois mois suivants. Voir le
+procédure d'asile d'un État membre. Il part des premières demandes pour
+100 000 habitants, en moyenne sur trois mois et sur une échelle
+logarithmique calée sur le taux le plus élevé jamais observé dans l'UE,
+puis est ajusté de 25 % au plus selon la tendance sur trois mois.
+Rapporter les demandes à la population rend comparables un petit État
+membre sous tension et un grand. Une forêt aléatoire par État membre
+prédit le score sur les trois mois suivants ; sur un indicateur aussi
+stable, elle ne fait qu'un peu mieux que l'hypothèse d'un score
+inchangé, et la comparaison est publiée dans le
 [Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md).
 
 **Usage prévu.** Connaissance opérationnelle de la situation pour les

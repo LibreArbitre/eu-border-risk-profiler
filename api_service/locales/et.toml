@@ -36,6 +36,7 @@ initializing = "⏳ Süsteem käivitub… ootan prognoosiandmeid."
 [ranking]
 country = "Riik"
 risk_index = "Riskiindeks"
+ref_month = "Andmed kuni"
 no_data = "Andmeid pole."
 
 [deep_dive]
@@ -44,8 +45,11 @@ chart_title = "Taotluste maht ajas"
 no_history = "Ajaloolised andmed puuduvad."
 current_label = "Praegune riskiindeks"
 assessment_prefix = "Hinnang andmete põhjal kuni"
+forecast_label = "Prognoos, järgmised 3 kuud"
+rate_label = "taotlust 100 000 elaniku kohta (3 kuu keskmine)"
+trend_label = "3 kuu trend"
 note_title = "Märkus analüüsi kohta"
-note_body = "Riskiskoor ühendab logaritmiliselt ELi tipphetkega normaliseeritud mahu ja kõige värskema kuust-kuusse muutuse."
+note_body = "Riskiindeks näitab esmakordsete taotluste arvu rahvaarvu suhtes kolme kuu keskmisena, logaritmilisel skaalal ELi kõigi aegade kõrgeima taseme suhtes, ning seda korrigeeritakse kolme kuu trendi põhjal kuni 25%."
 by_citizen_title = "Peamised kodakondsused"
 by_citizen_slider = "Kuvatavate kodakondsuste arv"
 by_citizen_chart_title = "Taotlused kodakondsuse järgi (kumulatiivne)"
@@ -63,13 +67,16 @@ kaks kuud**; värskeid kuid võidakse hiljem korrigeerida, kui
 liikmesriigid esitavad parandusi. Selles projektis agregeeritakse
 andmed tasemele (kuupäev, sihtliikmesriik) enne mistahes modelleerimist.
 
-**Mida skoor tähendab.** **Riskiindeks** on 0–100 näitaja, mis
+**Mida skoor tähendab.** **Riskiindeks** on näitaja skaalal 0-100, mis
 kirjeldab *halduskoormust* liikmesriigi esmakordsete taotluste
-menetluses antud kuul. Valem on
-`vol_norm × (1 + variation) × 100`, kus `vol_norm` on logaritmiliselt
-ELi ajaloolise tippväärtusega normaliseeritud maht ja `variation` on
-kuust-kuusse muutus. 27 riigi kohta treenitud Random Forest prognoosib
-skoori kolm kuud ette. Vt
+menetluses. Aluseks on esmakordsete taotluste arv 100 000 elaniku
+kohta kolme kuu keskmisena, logaritmilisel skaalal ELi kõigi aegade
+kõrgeima taseme suhtes; tulemust korrigeeritakse kolme kuu trendi
+põhjal kuni 25%. Rahvaarvuga võrdlemine teeb väikese ja suure
+liikmesriigi koormuse omavahel võrreldavaks. Iga liikmesriigi kohta
+treenitud Random Forest prognoosib skoori kolm kuud ette; nii stabiilse
+näitaja puhul on see vaid veidi täpsem kui eeldus, et skoor ei muutu,
+ja võrdlus on avaldatud dokumendis
 [Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md).
 
 **Kasutusotstarve.** Operatiivne olukorrateadlikkus rändepoliitika

@@ -49,87 +49,107 @@ class DummyModel:
         return [self.value for _ in range(len(features))]
 
 
+def _monthly(geo, values, start="2023-01-01"):
+    dates = pd.date_range(start=start, periods=len(values), freq="MS")
+    return [{"date": d, "geo_code": geo, "total_applications": v} for d, v in zip(dates, values)]
+
+
+def test_rate_frame_smooths_and_scales_by_population():
+    """300 applications a month for 1,000,000 inhabitants = 30 per 100k."""
+    group = pd.DataFrame(_monthly("XX", [300] * 8))
+    frame = rp.compute_rate_frame(group, population=1_000_000)
+
+    # The first two months cannot be smoothed over three months yet.
+    assert frame["rate_per_100k"].iloc[:2].isna().all()
+    assert frame["rate_per_100k"].iloc[2:].tolist() == pytest.approx([30.0] * 6)
+    assert frame["trend"].tolist() == pytest.approx([0.0] * 8)
+
+
+def test_rate_frame_trend_is_clipped_both_ways():
+    surge = rp.compute_rate_frame(pd.DataFrame(_monthly("XX", [100] * 6 + [1000] * 6)), 1_000_000)
+    collapse = rp.compute_rate_frame(pd.DataFrame(_monthly("XX", [1000] * 6 + [10] * 6)), 1_000_000)
+
+    assert surge["trend"].max() == pytest.approx(rp.TREND_CLIP)
+    assert collapse["trend"].min() == pytest.approx(-rp.TREND_CLIP)
+
+
+def test_rate_frame_counts_a_rise_from_zero_as_the_maximum_rise():
+    frame = rp.compute_rate_frame(pd.DataFrame(_monthly("XX", [0] * 6 + [50] * 6)), 1_000_000)
+    assert frame["trend"].max() == pytest.approx(rp.TREND_CLIP)
+    assert frame["trend"].min() >= 0
+
+
+def test_rate_frame_keeps_unpublished_months_as_gaps():
+    """A missing month is not a zero: it leaves a hole in the smoothed rate."""
+    rows = _monthly("XX", [300] * 10)
+    del rows[5]  # this month was never published
+    frame = rp.compute_rate_frame(pd.DataFrame(rows), 1_000_000)
+
+    assert len(frame) == 10  # the calendar is complete again
+    assert np.isnan(frame["total_applications"].iloc[5])
+    assert frame["rate_per_100k"].iloc[5:8].isna().all()  # windows touching the hole
+    assert frame["rate_per_100k"].iloc[8] == pytest.approx(30.0)
+
+
+def test_rate_frame_drops_a_trailing_zero_after_a_substantial_month():
+    frame = rp.compute_rate_frame(pd.DataFrame(_monthly("XX", [500] * 8 + [0])), 1_000_000)
+    assert len(frame) == 8
+    assert frame["total_applications"].iloc[-1] == 500
+
+
+def test_score_is_relative_to_population():
+    """Same applications, ten times fewer inhabitants: higher pressure."""
+    df = pd.DataFrame(_monthly("BIG", [1000] * 15) + _monthly("SMALL", [1000] * 15))
+    frames, reference_log = rp.build_score_frames(df, population={"BIG": 10_000_000, "SMALL": 1_000_000})
+
+    big = frames["BIG"]["risk_score"].iloc[-1]
+    small = frames["SMALL"]["risk_score"].iloc[-1]
+    assert small > big > 0
+    # The highest rate ever observed defines the top of the scale.
+    assert small == pytest.approx(100.0)
+    assert reference_log == pytest.approx(np.log1p(100.0))
+
+
+def test_countries_without_population_are_skipped():
+    df = pd.DataFrame(_monthly("FR", [1000] * 15) + _monthly("ZZ", [1000] * 15))
+    frames, _ = rp.build_score_frames(df)
+    assert list(frames) == ["FR"]
+
+
 def test_risk_calculation_nominal():
-    """
-    Test nominal risk calculation:
-    - Geo A: Low, Stable
-    - Geo B: High, Increasing
-    """
-
-    # Create synthetic history
-    dates = pd.date_range(start="2023-01-01", periods=15, freq="MS")  # 15 months > 12 requirement
-
-    data = []
-
-    # Geo A: 100 applications every month (Stable)
-    for d in dates:
-        data.append({"date": d, "geo_code": "GEO_A", "total_applications": 100})
-
-    # Geo B: Starts at 1000, increases by 100 every month (Increasing)
-    # Month 0: 1000
-    # Month 1: 1100 (+10% increase)
-    for i, d in enumerate(dates):
-        data.append({"date": d, "geo_code": "GEO_B", "total_applications": 1000 + (i * 100)})
-
-    df = pd.DataFrame(data)
-    engine = MockEngine()
-
-    # We execute the function
-    # Note: The function will train a model, so it might be slow if we don't mock train_model,
-    # but for unit test on 'calculate_risk' logic, we are more interested in the 'calculated_risk_score' output.
-
-    results = calculate_risk_and_predict(df, engine)
+    """Two Member States of similar size: stable and low vs high and rising."""
+    # PT: 100 applications every month. BE: starts at 1000, +100 a month.
+    data = _monthly("PT", [100] * 30) + _monthly("BE", [1000 + i * 100 for i in range(30)])
+    results = calculate_risk_and_predict(pd.DataFrame(data), MockEngine())
 
     assert not results.empty
+    stable = results[results["geo_code"] == "PT"].iloc[0]
+    rising = results[results["geo_code"] == "BE"].iloc[0]
 
-    # Check Geo A (Stable)
-    # Variation should be 0.
-    # Score = Log(100) / GlobalMax * (1 + 0) * 100
-    # It should be relatively constant (modulo the global max influence)
-    geo_a_results = results[results["geo_code"] == "GEO_A"]
-    # We expect some predictions
-    assert len(geo_a_results) > 0
-    # Last calculated score check
-    last_score_a = geo_a_results.iloc[-1]["risk_score_calculated"]
-    assert last_score_a > 0
-
-    # Check Geo B (Increasing)
-    geo_b_results = results[results["geo_code"] == "GEO_B"]
-    last_score_b = geo_b_results.iloc[-1]["risk_score_calculated"]
-
-    # Geo B has higher volume AND positive trend, so Score B should be > Score A
-    assert last_score_b > last_score_a
-
-    print(f"Score A (Stable Low): {last_score_a}")
-    print(f"Score B (Increasing High): {last_score_b}")
+    assert stable["risk_score_calculated"] > 0
+    assert rising["risk_score_calculated"] > stable["risk_score_calculated"]
+    assert stable["trend_3m"] == pytest.approx(0.0)
+    assert rising["trend_3m"] > 0
+    # 100 a month for 11,424,031 inhabitants.
+    assert stable["applications_per_100k"] == pytest.approx(100 / 11_424_031 * 100_000)
+    # Three horizons per country, all within the scale.
+    assert len(results) == 6
+    assert results["predicted_risk_score"].between(0, 100).all()
 
 
 def test_zero_division_protection():
-    """Test robustness against 0 volume or missing previous data"""
-    dates = pd.date_range(start="2023-01-01", periods=15, freq="MS")
-    data = []
+    """A country that never receives an application scores 0, without errors."""
+    results = calculate_risk_and_predict(pd.DataFrame(_monthly("PT", [0] * 30)), MockEngine())
 
-    # Geo C: Always 0
-    for d in dates:
-        data.append({"date": d, "geo_code": "GEO_C", "total_applications": 0})
-
-    df = pd.DataFrame(data)
-    engine = MockEngine()
-
-    results = calculate_risk_and_predict(df, engine)
-
-    if not results.empty:
-        geo_c = results[results["geo_code"] == "GEO_C"]
-        if not geo_c.empty:
-            assert geo_c.iloc[-1]["risk_score_calculated"] == 0
+    assert not results.empty
+    assert (results["risk_score_calculated"] == 0).all()
+    assert results["predicted_risk_score"].between(0, 100).all()
 
 
 def test_reuse_model_when_data_signature_matches(monkeypatch):
-    dates = pd.date_range(start="2023-01-01", periods=15, freq="MS")
-    data = [{"date": d, "geo_code": "GEO_REUSE", "total_applications": 50 + i} for i, d in enumerate(dates)]
-    df = pd.DataFrame(data)
+    df = pd.DataFrame(_monthly("FR", [5000 + i * 10 for i in range(30)]))
 
-    reused_model = DummyModel(value=12.0)
+    reused_model = DummyModel(value=2.0)  # the model predicts a CHANGE of +2 points
     reuse_signature = "stable-hash"
     was_trained = {"called": False}
 
@@ -161,20 +181,13 @@ def test_reuse_model_when_data_signature_matches(monkeypatch):
 
     assert not was_trained["called"], "Training should be skipped when data signature matches"
     assert not results.empty
-    assert all(results["predicted_risk_score"] == reused_model.value)
+    # Each horizon adds the predicted change to the previous step.
+    current = results["risk_score_calculated"].iloc[0]
+    expected = [min(100.0, current + 2.0 * step) for step in (1, 2, 3)]
+    assert results["predicted_risk_score"].tolist() == pytest.approx(expected)
 
     # Direct call still reports reuse
-    model, model_id, info = rp.get_or_train_model(
-        engine,
-        "GEO_REUSE",
-        df.assign(
-            risk_score=1.0,
-            lag_1=1.0,
-            lag_2=1.0,
-            lag_3=1.0,
-            month=df["date"].dt.month,
-        ),
-    )
+    model, model_id, info = rp.get_or_train_model(engine, "FR", df)
 
     assert model is reused_model
     assert model_id == 99
@@ -241,14 +254,21 @@ def test_evaluate_model_holdout_handles_empty_inputs():
 def test_evaluate_model_holdout_returns_mae():
     test_df = pd.DataFrame({
         "lag_1": [1, 2, 3],
-        "lag_2": [1, 2, 3],
-        "lag_3": [1, 2, 3],
+        "delta_1": [1, 2, 3],
         "month": [1, 2, 3],
-        "risk_score": [4.0, 6.0, 8.0],
+        "delta": [4.0, 6.0, 8.0],
     })
     model = DummyModel(value=5.0)
-    # Predictions are constant 5; absolute errors are |4-5|, |6-5|, |8-5| = 1, 1, 3 → mean = 5/3
+    # Predictions are constant 5; absolute errors are |4-5|, |6-5|, |8-5| = 1, 1, 3 -> mean = 5/3
     assert evaluate_model_holdout(test_df, model) == pytest.approx(5 / 3)
+
+
+def test_naive_holdout_mae_is_the_mean_absolute_change():
+    """Predicting "same as last month" is wrong by exactly the change."""
+    test_df = pd.DataFrame({"delta": [1.0, -3.0, 2.0]})
+    assert rp.naive_holdout_mae(test_df) == pytest.approx(2.0)
+    assert rp.naive_holdout_mae(None) is None
+    assert rp.naive_holdout_mae(pd.DataFrame()) is None
 
 
 def test_is_data_fresh_rejects_empty_frame():

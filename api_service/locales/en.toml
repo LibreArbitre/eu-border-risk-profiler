@@ -36,6 +36,7 @@ initializing = "⏳ System initializing… waiting for prediction data."
 [ranking]
 country = "Country"
 risk_index = "Risk Index"
+ref_month = "Data up to"
 no_data = "No data available."
 
 [deep_dive]
@@ -44,8 +45,11 @@ chart_title = "Volume history (applications)"
 no_history = "No historical data available."
 current_label = "Current Risk Index"
 assessment_prefix = "Assessment based on data up to"
+forecast_label = "Forecast, next 3 months"
+rate_label = "applications per 100,000 inhabitants (3-month average)"
+trend_label = "3-month trend"
 note_title = "Analysis note"
-note_body = "The Risk Score combines volume — log-normalised against the all-time EU peak — with the most recent month-over-month variation."
+note_body = "The Risk Index measures first-time applications relative to population, averaged over three months and log-scaled against the highest rate ever observed in the EU, then adjusted by up to 25% for the three-month trend."
 by_citizen_title = "Top nationalities"
 by_citizen_slider = "Number of nationalities to show"
 by_citizen_chart_title = "Applications by nationality (cumulative)"
@@ -65,11 +69,14 @@ State) level by this project before any modelling.
 
 **What the score means.** The **Risk Index** is a 0-100 indicator of
 *administrative pressure* on a Member State's first-time asylum
-procedure for a given month, derived as
-`vol_norm × (1 + variation) × 100`, where `vol_norm` is the volume
-log-normalised against the all-time EU peak and `variation` is the
-month-over-month change. A 27-country Random Forest forecasts the
-score for the next three months. See the
+procedure. It starts from first-time applications per 100,000
+inhabitants, averaged over three months and log-scaled against the
+highest rate ever observed in the EU, and is then adjusted by up to 25%
+for the three-month trend. Relating applications to population is what
+makes a small Member State under strain comparable with a large one. A
+Random Forest per Member State forecasts the score for the next three
+months; on an indicator this stable it improves only slightly on
+assuming no change, and the comparison is published in the
 [Model Card](https://github.com/LibreArbitre/eu-border-risk-profiler/blob/main/docs/MODEL_CARD.md).
 
 **Intended use.** Operational situational awareness for migration

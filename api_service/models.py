@@ -19,6 +19,11 @@ class RiskPredictionResponse(BaseModel):
     predicted_risk_score: float
     predicted_risk_score_p10: Optional[float] = None
     predicted_risk_score_p90: Optional[float] = None
+    # Inputs of the score for the reference month (``date``): smoothed
+    # first-time applications per 100,000 inhabitants, and the relative
+    # change of the smoothed volume over three months (clipped to +/- 0.5).
+    applications_per_100k: Optional[float] = None
+    trend_3m: Optional[float] = None
     date: date
     prediction_target_month: date
     type: str = "predicted"
@@ -55,6 +60,11 @@ class CurrentRiskResponse(BaseModel):
     risk_score: float
     risk_score_p10: Optional[float] = None
     risk_score_p90: Optional[float] = None
+    applications_per_100k: Optional[float] = None
+    trend_3m: Optional[float] = None
+    # Last published month for this Member State; countries report at
+    # different speeds, so it is not the same for everyone.
+    reference_month: Optional[date] = None
     prediction_target_month: date
     horizon_months: int
     percent_change: Optional[float] = None
