@@ -24,7 +24,7 @@ hotspot = "Kõrgeima riskiga riik"
 monitored = "Jälgitavate riikide arv"
 
 [section]
-heatmap = "Riski soojuskaart (prognoos)"
+heatmap = "Riski soojuskaart"
 ranking = "Riski edetabel"
 deep_dive = "Detailne analüüs"
 about = "Andmete kohta"

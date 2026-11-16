@@ -121,8 +121,9 @@ the earlier steps.
 
 - **Cascading error on M+2 and M+3.** The autoregressive feed-back of
   predicted scores as lag features compounds error at longer horizons.
-  The dashboard shows the average of M+1 to M+3 in the headline
-  heatmap, which softens but does not fix the issue.
+  The dashboard's tiles, heatmap and ranking show the score of the
+  last published month; the forecast only appears in the country
+  card, as the average of M+1 to M+3 with its band.
 - **Country-only granularity.** The harvest keeps the per-citizenship
   breakdown for the dashboard, but the score and the model only use
   each Member State's total. The model cannot distinguish pressure

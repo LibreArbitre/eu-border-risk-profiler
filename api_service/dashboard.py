@@ -362,7 +362,11 @@ if not df_pred.empty:
             agg_spec[optional] = "first"
 
     df_map = merged.groupby("geo_code").agg(agg_spec).reset_index()
-    df_map["risk_score"] = df_map["predicted_risk_score"]
+    # Headline figure everywhere (tiles, map, ranking): the score of each
+    # country's last published month. The M+1..M+3 forecast average is kept
+    # apart and only shown, labelled as such, in the country card.
+    df_map["forecast_score"] = df_map["predicted_risk_score"]
+    df_map["risk_score"] = df_map["risk_score_calculated"]
     valid_data = True
 
 # ---------------------------------------------------------------------------
@@ -642,8 +646,8 @@ if valid_data:
 
             # Main figure: the score of the last published month. The forecast
             # (average of M+1 to M+3) sits on its own line with its band.
-            current = _number("risk_score_calculated")
-            forecast = _number("risk_score")
+            current = _number("risk_score")
+            forecast = _number("forecast_score")
             p10 = _number("predicted_risk_score_p10")
             p90 = _number("predicted_risk_score_p90")
             rate = _number("applications_per_100k")

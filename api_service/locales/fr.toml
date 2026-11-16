@@ -24,7 +24,7 @@ hotspot = "Pays le plus exposé"
 monitored = "Pays suivis"
 
 [section]
-heatmap = "Carte de chaleur du risque (prévision)"
+heatmap = "Carte de chaleur du risque"
 ranking = "Classement par risque"
 deep_dive = "Analyse approfondie"
 about = "À propos des données"

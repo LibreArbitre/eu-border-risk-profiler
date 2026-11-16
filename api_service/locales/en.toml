@@ -24,7 +24,7 @@ hotspot = "High Risk Hotspot"
 monitored = "Monitored Countries"
 
 [section]
-heatmap = "Risk Heatmap (forecast)"
+heatmap = "Risk Heatmap"
 ranking = "Risk Ranking"
 deep_dive = "Deep Dive Analysis"
 about = "About this data"
