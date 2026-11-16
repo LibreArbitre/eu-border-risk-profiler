@@ -30,9 +30,9 @@ DB_HOST=db
 
 **Optional Variables (with defaults):**
 ```
-# Scheduler timezone (default Europe/Paris). The harvester runs daily at
-# 02:00 and the predictor at 03:00 in this zone. Pick UTC if your VPS is
-# UTC and you want predictable scheduling.
+# Timezone for log timestamps (default Europe/Paris). The weekly refresh
+# (harvest, then prediction) is triggered by the `scheduler` sidecar every
+# Monday at 02:00 UTC, plus once at start-up.
 TZ=Europe/Paris
 
 # Resilience knobs

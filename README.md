@@ -21,10 +21,10 @@ The **EU Border Risk Profiler** is a specialized intelligence system designed to
 The solution adheres to a microservices architecture orchestrated by Docker Compose:
 
 1.  **Data Harvester** (`data_harvester`): 
-    *   **Role**: Autonomous agent that queries the Eurostat Bulk API (`migr_asyappctzm`) daily at 02:00.
+    *   **Role**: Autonomous agent that checks the Eurostat Bulk API (`migr_asyappctzm`) every Monday night (and once at start-up), downloading only when the dataset has changed.
     *   **Mechanism**: Performs differential updates, parses TSV streams, and handles data cleaning (normalizing gaps).
 2.  **Risk Predictor** (`risk_predictor`):
-    *   **Role**: Intelligence engine that runs daily at 03:00.
+    *   **Role**: Intelligence engine that runs right after each successful harvest.
     *   **Logic**: 
         *   Loads sanitized data from PostgreSQL.
         *   Calculates the "Risk Score" (Volume × Trend).
@@ -65,7 +65,7 @@ The system calculates a "Risk Score" (0-100) for every country/month:
 ### Machine Learning Model
 *   **Type**: Random Forest Regressor (Scikit-learn).
 *   **Target**: One model per country, trained on 60 months of historical data.
-*   **Retraining Strategy**: The system attempts to load an existing model (`model_registry`). If new data is detected during the daily run, it automatically triggers a retraining cycle to keep forecasts accurate.
+*   **Retraining Strategy**: The system attempts to load an existing model (`model_registry`). If new data is detected during the weekly run, it automatically triggers a retraining cycle to keep forecasts accurate.
 
 ## Project Structure
 

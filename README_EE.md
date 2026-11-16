@@ -26,11 +26,11 @@
 Lahendus järgib Docker Compose’i abil orkestreeritud mikroteenuste arhitektuuri:
 
 1. **Data Harvester** (`data_harvester`):
-   * **Roll**: Autonoomne agent, mis küsib Eurostati Bulk API-t (`migr_asyappctzm`) iga päev kell 02:00.
+   * **Roll**: Autonoomne agent, mis kontrollib Eurostati Bulk API-t (`migr_asyappctzm`) igal esmaspäeva öösel (ja korra käivitamisel) ning laadib andmed alla ainult siis, kui andmestik on muutunud.
    * **Töömehhanism**: Laadib uusi andmeid ainult siis, kui Eurostati `Last-Modified` on muutunud, töötleb TSV-vooge tükkidena ja kasutab atomaarset staging-tabeli vahetust, et `asylum_data` ei jääks kunagi pooleli.
 
 2. **Risk Predictor** (`risk_predictor`):
-   * **Roll**: Luuremootor, mis käivitatakse iga päev kell 03:00.
+   * **Roll**: Luuremootor, mis käivitatakse kohe pärast iga õnnestunud andmekogumist.
    * **Loogika**:
        * Laadib puhastatud andmed PostgreSQL-ist.
        * Arvutab „riskiskoori“ (maht × trend).
@@ -76,7 +76,7 @@ Riskiskoor (0–100) põhineb:
 ### Masinõpe
 * **Mudelitüüp**: Random Forest Regressor (Scikit-learn).
 * **Üks mudel iga ELi liikmesriigi kohta**, treenitud kuni 60 kuu ajaloolise andmestiku peal.
-* **Treenimisstrateegia**: Süsteem proovib esmalt laadida olemasoleva mudeli (`model_registry` tabelist). Kui igapäevase käivituse ajal tuvastatakse uusi andmeid, käivitatakse ümberõpe automaatselt, et prognoosid püsiksid täpsed.
+* **Treenimisstrateegia**: Süsteem proovib esmalt laadida olemasoleva mudeli (`model_registry` tabelist). Kui iganädalase käivituse ajal tuvastatakse uusi andmeid, käivitatakse ümberõpe automaatselt, et prognoosid püsiksid täpsed.
 
 ## Projekti struktuur
 

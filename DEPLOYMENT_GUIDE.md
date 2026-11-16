@@ -28,8 +28,8 @@ DB_HOST=db
 
 **Optional Variables (with defaults):**
 ```
-# Scheduler timezone (defaults to Europe/Paris). Drives the harvester (02:00)
-# and predictor (03:00) daily run windows. Set to UTC if you prefer.
+# Timezone for log timestamps (defaults to Europe/Paris). The weekly refresh
+# is triggered by the `scheduler` sidecar every Monday at 02:00 UTC.
 TZ=Europe/Paris
 
 # Resilience knobs for harvester/predictor
@@ -117,16 +117,21 @@ Open `http://localhost:8501` in your browser.
 2.  Wait for harvester/predictor to complete at least one full cycle (5-10 mins)
 3.  Check DB data: `docker exec -it eu_brp_db psql -U user -d eubrp_db -c "SELECT COUNT(*) FROM risk_predictions"`
 
-#### Issue: Harvester reports unhealthy
-**Symptom:** Container marked unhealthy after a few hours
-**Cause:** The harvester health check verifies that a successful run touched
-`/tmp/harvester_health` within `HARVESTER_HEALTH_MAX_AGE_SECONDS` (default
-25 h). If the daily run fails repeatedly the container becomes unhealthy.
+#### Issue: Data stops refreshing
+**Symptom:** The dashboard footer keeps showing an old month although Eurostat
+has published newer data.
+**Cause:** The weekly refresh is driven by the `scheduler` sidecar, which runs
+the harvest and then the prediction inside the idle `eu_brp_harvester` and
+`eu_brp_predictor` containers through `docker exec`. If either container is
+missing or the job fails, the refresh is skipped until the next Monday.
 **Solutions:**
-1.  Inspect the logs for the latest run: `docker logs eu_brp_harvester | tail -50`
-2.  If Eurostat is unreachable, the run will retry on its next 24 h cycle.
-3.  Restart the container to trigger an immediate fresh harvest if needed:
-    `docker compose restart data_harvester`
+1.  Check the outcome of the last passes: `docker logs eu_brp_scheduler | tail -20`
+    (each pass logs `refresh OK` or `refresh FAILED`).
+2.  Inspect the job output: `docker logs eu_brp_harvester | tail -50` and
+    `docker logs eu_brp_predictor | tail -50`.
+3.  Trigger a pass by hand: `docker exec eu_brp_scheduler /usr/local/bin/refresh`
+4.  Make sure `eu_brp_harvester` and `eu_brp_predictor` are `Up`. They must stay
+    resident: stopped containers are removed by periodic Docker clean-ups.
 
 ### 📊 Data Flow Understanding
 `Eurostat API` -> `Harvester` -> `PostgreSQL` -> `Predictor` -> `PostgreSQL` -> `API` -> `Dashboard`

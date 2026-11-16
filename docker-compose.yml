@@ -28,9 +28,15 @@ services:
       context: ./data_harvester
       dockerfile: Dockerfile
     container_name: eu_brp_harvester
-    # One-shot : récolte une fois puis sort (plus de daemon résident 24/7).
-    # Re-déclenché 1x/mois par le service `scheduler`. restart "no" -> reste exited.
-    restart: "no"
+    # Conteneur résident AU REPOS (`sleep infinity`, quasi zéro RAM) : la récolte
+    # est lancée dedans par le service `scheduler` via `docker exec`, puis le
+    # process Python sort et rend sa mémoire.
+    # Ne PAS revenir à un conteneur one-shot `Exited` relancé par `docker start` :
+    # les nettoyages Docker périodiques (docker container/image prune, activés
+    # par défaut sur Dokploy) suppriment les conteneurs arrêtés ET leurs images,
+    # et le déclenchement planifié échoue alors en silence ("No such container").
+    restart: unless-stopped
+    init: true
     # S'assure que la BDD est prête avant de démarrer le Harvester
     depends_on:
       db:
@@ -48,18 +54,19 @@ services:
       HARVESTER_HEALTH_FILE: ${HARVESTER_HEALTH_FILE:-/tmp/harvester_health}
       HARVESTER_MONTHS: ${HARVESTER_MONTHS:-60}
       HARVESTER_TIME_CHUNK: ${HARVESTER_TIME_CHUNK:-12}
-    command: python /app/harvester_tsv.py --once
+    command: sleep infinity
   # 3. Agent: Risk_Predictor (Calcul du risque et entraînement du modèle IA)
   risk_predictor:
     build:
       context: ./risk_predictor
       dockerfile: Dockerfile
     container_name: eu_brp_predictor
-    # One-shot comme le harvester ; déclenché 1x/mois après la récolte.
-    restart: "no"
-    # En one-shot, l'ordre harvester -> predictor est garanti par le scheduler
-    # (docker start -a en série). run_job() attend en plus (boucle bornée) que
-    # des données fraîches soient présentes avant d'entraîner, donc pas de course.
+    # Résident au repos comme le harvester (voir le commentaire plus haut).
+    # L'ordre harvester -> predictor est garanti par le scheduler (docker exec
+    # en série). run_job() attend en plus (boucle bornée) que des données
+    # fraîches soient présentes avant d'entraîner, donc pas de course.
+    restart: unless-stopped
+    init: true
     depends_on:
       db:
         condition: service_healthy
@@ -74,26 +81,49 @@ services:
       RETRY_BACKOFF_SECONDS: ${RETRY_BACKOFF_SECONDS:-2}
       EXIT_ON_FAILURE: ${EXIT_ON_FAILURE:-true}
       PREDICTOR_HEALTH_FILE: ${PREDICTOR_HEALTH_FILE:-/tmp/predictor_health}
-    command: python /app/risk_predictor.py --once
-  # 3b. Scheduler : déclenche harvester puis predictor 1x/mois (cron sidecar léger ~15 Mo).
-  # Re-exécute les conteneurs one-shot EXISTANTS via le socket Docker -> aucune duplication
-  # de config/secrets/réseau. `docker start -a` attend la fin et propage le code retour,
-  # donc le predictor ne tourne que si la récolte a réussi (&&).
-  # NB: crond tourne en UTC dans ce conteneur (pas de tzdata) -> "0 2 1 * *" = 02:00 UTC,
+    command: sleep infinity
+  # 3b. Scheduler : cron sidecar léger (~15 Mo) qui lance la récolte puis la prédiction
+  # DANS les conteneurs résidents via `docker exec` -> aucune duplication de
+  # config/secrets/réseau. `docker exec` attend la fin et propage le code retour,
+  # donc le predictor ne tourne que si la récolte a réussi (&&). La sortie des jobs
+  # est renvoyée vers le stdout du conteneur cible (/proc/1/fd/1) pour rester
+  # lisible avec `docker logs eu_brp_harvester` / `eu_brp_predictor`.
+  # Cadence : une passe au démarrage (premier déploiement, reboot de l'hôte), puis
+  # chaque lundi. Une passe sans nouvelle publication Eurostat coûte une sonde
+  # d'environ 1 Ko : le téléchargement de 440 Mo n'a lieu que si le jeu a changé.
+  # NB: crond tourne en UTC dans ce conteneur (pas de tzdata) -> 02:00 UTC,
   # soit 03:00/04:00 Paris selon la saison. Créneau nocturne dans tous les cas.
   scheduler:
     image: docker:27-cli
     container_name: eu_brp_scheduler
     restart: unless-stopped
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      data_harvester:
+        condition: service_started
+      risk_predictor:
+        condition: service_started
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     entrypoint:
       - /bin/sh
       - -c
       - |
-        echo '0 2 1 * * docker start -a eu_brp_harvester && docker start -a eu_brp_predictor' > /etc/crontabs/root
+        cat > /usr/local/bin/refresh <<'EOF'
+        #!/bin/sh
+        echo "[scheduler] refresh started"
+        if docker exec eu_brp_harvester sh -c 'python /app/harvester_tsv.py --once > /proc/1/fd/1 2>&1' \
+          && docker exec eu_brp_predictor sh -c 'python /app/risk_predictor.py --once > /proc/1/fd/1 2>&1'; then
+          echo "[scheduler] refresh OK"
+        else
+          echo "[scheduler] refresh FAILED (see docker logs eu_brp_harvester / eu_brp_predictor)"
+          exit 1
+        fi
+        EOF
+        chmod +x /usr/local/bin/refresh
+        echo '0 2 * * 1 /usr/local/bin/refresh' > /etc/crontabs/root
+        /usr/local/bin/refresh || true
         exec crond -f -l 8 -c /etc/crontabs
   # 4. Agent: API_Service (FastAPI Backend)
   api_service:
