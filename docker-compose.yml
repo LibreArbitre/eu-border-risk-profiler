@@ -88,15 +88,20 @@ services:
   # donc le predictor ne tourne que si la récolte a réussi (&&). La sortie des jobs
   # est renvoyée vers le stdout du conteneur cible (/proc/1/fd/1) pour rester
   # lisible avec `docker logs eu_brp_harvester` / `eu_brp_predictor`.
-  # Cadence : une passe au démarrage (premier déploiement, reboot de l'hôte), puis
-  # chaque lundi. Une passe sans nouvelle publication Eurostat coûte une sonde
+  # Cadence : une passe au démarrage (premier déploiement, reboot de l'hôte), une
+  # passe dès qu'un des deux conteneurs de job est recréé (redéploiement d'une
+  # nouvelle version : sans cela le nouveau code n'était exercé que le lundi
+  # suivant, le scheduler n'étant pas recréé quand sa propre config ne change pas),
+  # puis chaque lundi. Une passe sans nouvelle publication Eurostat coûte une sonde
   # d'environ 1 Ko : le téléchargement de 440 Mo n'a lieu que si le jeu a changé.
-  # NB: crond tourne en UTC dans ce conteneur (pas de tzdata) -> 02:00 UTC,
+  # NB: l'horloge de ce conteneur est en UTC (pas de tzdata) -> lundi 02:00 UTC,
   # soit 03:00/04:00 Paris selon la saison. Créneau nocturne dans tous les cas.
+  # Les `$$` sont l'échappement Compose d'un `$` destiné au shell du conteneur.
   scheduler:
     image: docker:27-cli
     container_name: eu_brp_scheduler
     restart: unless-stopped
+    init: true
     depends_on:
       db:
         condition: service_healthy
@@ -112,6 +117,7 @@ services:
       - |
         cat > /usr/local/bin/refresh <<'EOF'
         #!/bin/sh
+        exec > /proc/1/fd/1 2>&1
         echo "[scheduler] refresh started"
         if docker exec eu_brp_harvester sh -c 'python /app/harvester_tsv.py --once > /proc/1/fd/1 2>&1' \
           && docker exec eu_brp_predictor sh -c 'python /app/risk_predictor.py --once > /proc/1/fd/1 2>&1'; then
@@ -122,9 +128,24 @@ services:
         fi
         EOF
         chmod +x /usr/local/bin/refresh
-        echo '0 2 * * 1 /usr/local/bin/refresh' > /etc/crontabs/root
+        # Start times of the two job containers: changes when one is recreated.
+        state() { docker inspect -f '{{.State.StartedAt}}' eu_brp_harvester eu_brp_predictor 2>/dev/null | tr '\n' ' '; }
         /usr/local/bin/refresh || true
-        exec crond -f -l 8 -c /etc/crontabs
+        SEEN="$$(state)"
+        LAST_WEEKLY=""
+        while true; do
+          sleep 60
+          NOW="$$(state)"
+          TODAY="$$(date -u +%F)"
+          if [ "$$(echo "$$NOW" | wc -w)" = "2" ] && [ "$$NOW" != "$$SEEN" ]; then
+            SEEN="$$NOW"
+            echo "[scheduler] job container recreated"
+            /usr/local/bin/refresh || true
+          elif [ "$$(date -u +%u%H)" = "102" ] && [ "$$LAST_WEEKLY" != "$$TODAY" ]; then
+            LAST_WEEKLY="$$TODAY"
+            /usr/local/bin/refresh || true
+          fi
+        done
   # 4. Agent: API_Service (FastAPI Backend)
   api_service:
     build:
