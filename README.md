@@ -59,12 +59,12 @@ This project is optimized for efficiency and does **not** require heavy hardware
 
 ### The Risk Formula
 The system calculates a "Risk Score" (0-100) for every country/month:
-*   **Volume Component**: Normalized logarithmically against the all-time EU high (1.3M applications in 2015). This ensures that a current crisis (e.g., 100k applications) registers as "High Risk" (~85/100) rather than "Low" when compared linearly to the past.
-*   **Trend Component**: Adjusts the score based on month-over-month variation (acceleration/deceleration).
+*   **Pressure Component**: First-time applications per 100,000 inhabitants, averaged over three months, on a logarithmic scale anchored to the highest rate ever observed in a Member State. Relating applications to population makes a small country under strain comparable with a large one.
+*   **Trend Component**: Adjusts the score by at most 25% according to the three-month trend (smoothed volume against the one three months earlier).
 
 ### Machine Learning Model
 *   **Type**: Random Forest Regressor (Scikit-learn).
-*   **Target**: One model per country, trained on 60 months of historical data.
+*   **Target**: One model per country, trained on the full monthly history since 2008 to predict the month-over-month change of the score. Its hold-out error is published next to a naive "no change" baseline in the [Model Card](docs/MODEL_CARD.md).
 *   **Retraining Strategy**: The system attempts to load an existing model (`model_registry`). If new data is detected during the weekly run, it automatically triggers a retraining cycle to keep forecasts accurate.
 
 ## Project Structure

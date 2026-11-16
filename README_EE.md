@@ -70,12 +70,12 @@ Projekt on optimeeritud efektiivsuseks ega vaja tugevat riistvara ega GPU-sid.
 ### Riskivalem
 Riskiskoor (0–100) põhineb:
 
-* **Mahukomponendil** – logaritmiliselt normaliseeritud kogu ELi ajaloo maksimumi suhtes (1,3 mln taotlust 2015. aastal). See tagab, et praegune kriis (nt 100k taotlust) registreeritakse „kõrge riskiga“ kategoorias (~85/100), mitte „madala riskiga“ võrreldes lineaarselt minevikuga.
-* **Trendikomponendil** – kuust-kuusse muutuse kiirenemine või aeglustumine.
+* **Koormuskomponendil**: esmakordsete taotluste arv 100 000 elaniku kohta kolme kuu keskmisena, logaritmilisel skaalal, mille tipuks on liikmesriikides seni mõõdetud kõrgeim tase. Rahvaarvuga võrdlemine teeb väikese ja suure liikmesriigi koormuse omavahel võrreldavaks.
+* **Trendikomponendil**: skoori korrigeeritakse kolme kuu trendi põhjal kuni 25% (silutud maht võrrelduna kolme kuu taguse mahuga).
 
 ### Masinõpe
 * **Mudelitüüp**: Random Forest Regressor (Scikit-learn).
-* **Üks mudel iga ELi liikmesriigi kohta**, treenitud kuni 60 kuu ajaloolise andmestiku peal.
+* **Üks mudel iga ELi liikmesriigi kohta**, treenitud kogu igakuise ajaloo peal alates 2008. aastast ja ennustab skoori kuist muutust. Mudeli viga võrrelduna lihtsa eeldusega „skoor ei muutu“ on avaldatud dokumendis [Model Card](docs/MODEL_CARD.md).
 * **Treenimisstrateegia**: Süsteem proovib esmalt laadida olemasoleva mudeli (`model_registry` tabelist). Kui iganädalase käivituse ajal tuvastatakse uusi andmeid, käivitatakse ümberõpe automaatselt, et prognoosid püsiksid täpsed.
 
 ## Projekti struktuur

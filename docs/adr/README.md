@@ -13,6 +13,7 @@ record link back to it explicitly.
 | [ADR-003](003-temporal-train-test-split.md) | Temporal train/test split for honest evaluation | Accepted |
 | [ADR-004](004-optional-api-key-auth.md) | Optional `X-API-Key` authentication | Accepted |
 | [ADR-005](005-streamlit-for-analyst-dashboard.md) | Streamlit for the analyst dashboard | Accepted |
+| [ADR-006](006-per-capita-smoothed-score.md) | Per-capita, smoothed risk score | Accepted |
 
 ## Conventions
 

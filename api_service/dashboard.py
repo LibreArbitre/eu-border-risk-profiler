@@ -465,7 +465,7 @@ if valid_data:
 # Heatmap + ranking (with click-to-select)
 # ---------------------------------------------------------------------------
 
-col_map, col_ranking = st.columns([2, 1])
+col_map, col_ranking = st.columns([3, 2])
 
 with col_map:
     section_title(t("section.heatmap"))

@@ -11,30 +11,49 @@ dataset.
 
 - **Family:** scikit-learn `RandomForestRegressor`, one independent
   estimator per EU Member State (27 models).
-- **Hyperparameters:** `n_estimators=50`, `random_state=42`. No
-  per-country tuning. Hyperparameters and the exact pickled artifact
-  for every fit are stored in PostgreSQL (`model_registry` table)
-  alongside a SHA-256 signature of the training frame.
-- **Inputs (features):** four scalar features per observation —
-  `lag_1`, `lag_2`, `lag_3` (the country's calculated risk score for
-  the three preceding months) and `month` (1-12 calendar month
-  index).
-- **Output (target):** the calculated risk score (0-100) for the
-  prediction target month. The score is a deterministic transform of
-  the underlying volume — `vol_norm × (1 + variation) × 100` — defined
-  in [`risk_predictor.calculate_risk_and_predict`](../risk_predictor/risk_predictor.py).
-- **Prediction horizon:** three steps ahead (M+1, M+2, M+3). M+2 and
-  M+3 are produced autoregressively, feeding earlier predictions back
-  in as lag features.
+- **Hyperparameters:** `n_estimators=50`, `min_samples_leaf=5`,
+  `random_state=42`. No per-country tuning. Hyperparameters and the
+  exact pickled artifact for every fit are stored in PostgreSQL
+  (`model_registry` table) alongside a SHA-256 signature of the
+  training frame.
+- **The score being forecast:** a deterministic 0-100 indicator
+  computed in [`risk_predictor`](../risk_predictor/risk_predictor.py)
+  (`compute_rate_frame`, `add_score`):
+  1. first-time applications are averaged over three months and
+     expressed per 100,000 inhabitants;
+  2. that rate is log-scaled against the highest rate ever observed
+     in any Member State, so one exceptional episode does not flatten
+     every other value;
+  3. the result is adjusted by at most 25 % for the three-month trend
+     (smoothed volume against the one three months earlier, clipped to
+     +/- 50 %).
+
+  See [ADR-006](adr/006-per-capita-smoothed-score.md) for why this
+  replaced the earlier volume times month-over-month formula.
+- **Inputs (features):** three scalar features per observation:
+  `lag_1` (the score of the previous month), `delta_1` (its last
+  month-over-month change) and `month` (1-12 calendar month index).
+- **Output (target):** the **change** of the score from one month to
+  the next. The forecast is the previous value plus the predicted
+  change. The score is highly persistent, and a forest trained on its
+  level cannot extrapolate and loses to assuming no change.
+- **Prediction horizon:** three steps ahead (M+1, M+2, M+3), from the
+  last month each Member State has published. M+2 and M+3 are produced
+  autoregressively, each step starting from the previous forecast.
+- **Uncertainty band:** the 10th and 90th percentiles of the per-tree
+  predictions are stored and served as P10 / P90 next to the point
+  estimate.
 - **Refit cadence:** triggered when the SHA-256 signature of a country's
-  training frame changes (i.e. Eurostat published new or revised
-  values), or when the persisted model is older than
-  `MODEL_MAX_AGE_DAYS` (default 30). Otherwise the cached model is
-  reused.
+  training frame changes (Eurostat published new or revised values,
+  the EU-wide reference rate moved, or the score definition changed),
+  or when the persisted model is older than `MODEL_MAX_AGE_DAYS`
+  (default 30). Otherwise the cached model is reused.
 - **Evaluation:** the most recent ~20 % of observations are held out
   chronologically; a candidate model is fit on the older portion and
-  scored on the hold-out (`test_mae`). The deployed model is then
-  refit on the full series. See [ADR-003](adr/003-temporal-train-test-split.md).
+  scored on the hold-out (`test_mae`), next to the error of the naive
+  "same as last month" forecast on the same months (`naive_test_mae`).
+  The deployed model is then refit on the full series. See
+  [ADR-003](adr/003-temporal-train-test-split.md).
 
 ## Intended use
 
@@ -70,18 +89,33 @@ on this distinction before being granted access.
 ## Performance
 
 We report the Mean Absolute Error of the candidate model on the
-chronological 20 % hold-out, per country, refreshed at every
-significant retrain. Typical values today are between 5 and 15 risk
-points for the larger Member States and noisier (10-30) for the
-smaller series. Drift relative to the previously deployed model is
-flagged when MAE worsens by more than `DRIFT_TOLERANCE` (default
-15 %) and is logged as a warning; the deployment is not rolled back
-automatically.
+chronological 20 % hold-out (about 41 months per country), refreshed
+at every retrain, always next to the naive baseline that predicts no
+change. Both are stored in `model_registry.hyperparameters` and logged.
 
-The system does not currently report prediction intervals. Adding
-them is on the roadmap (quantile forests or conformal prediction).
-Until then, point estimates should be read with the corresponding
-country-level test MAE in mind.
+Figures from the retrain of 16 November 2026, one-step-ahead, in score
+points on the 0-100 scale, averaged over the 27 Member States:
+
+| Forecast | Hold-out MAE |
+|----------|--------------|
+| Random Forest on the change of the score | 3.39 |
+| Naive: same as last month | 3.58 |
+
+The model is about 5 % better than the naive forecast on average and
+beats it in 14 of the 27 Member States. **This is a small edge, and it
+should be read as such:** the score is smooth by construction, so most
+of what can be said about next month is already in this month's value.
+The forecast is a mild refinement of the current score, not an early
+warning system.
+
+Drift relative to the previously deployed model is flagged when MAE
+worsens by more than `DRIFT_TOLERANCE` (default 15 %) and is logged as
+a warning; the deployment is not rolled back automatically.
+
+The P10 / P90 band comes from the spread of the individual trees. It
+describes the model's own disagreement, not a calibrated confidence
+interval, and at M+2 and M+3 it does not accumulate the uncertainty of
+the earlier steps.
 
 ## Known limitations
 
@@ -89,22 +123,31 @@ country-level test MAE in mind.
   predicted scores as lag features compounds error at longer horizons.
   The dashboard shows the average of M+1 to M+3 in the headline
   heatmap, which softens but does not fix the issue.
-- **Country-only granularity.** All citizenships are aggregated to
-  `TOTAL` in the harvest pipeline. The model cannot distinguish
-  pressure originating from different source populations.
+- **Country-only granularity.** The harvest keeps the per-citizenship
+  breakdown for the dashboard, but the score and the model only use
+  each Member State's total. The model cannot distinguish pressure
+  originating from different source populations.
+- **One population reference year.** The per-capita rate uses the
+  resident population on 1 January 2026 (Eurostat `tps00001`) for the
+  whole history. Population changes slowly, but rates before roughly
+  2015 are a few percent off for the Member States whose population
+  moved the most.
+- **A trend exposed to late reporting.** Recent months are often
+  revised upwards. Averaging over three months dampens this, but a
+  provisional low month still pulls the trend down until it is
+  revised.
 - **Surprise to structural breaks.** Historical training cannot
   anticipate events whose dynamics are unprecedented in the training
   window — the model would have under-predicted the 2015 Syrian arrival
   surge or the early 2022 Ukrainian displacement, and similar future
-  events will surprise it. The risk-score formula partially compensates
-  via the volume normalisation against the all-time EU peak, but the
-  forecast itself remains inertial.
+  events will surprise it. The forecast is inertial by design.
 - **Reporting lag in the source.** Eurostat publishes monthly with a
   one- to two-month lag and revises older months; the most recent
-  reported month often shows a structural undercount. The harvester
-  drops a country's last month if it is exactly zero while the prior
-  month was substantial, but this heuristic is conservative and
-  misses subtler undercounts.
+  reported month often shows a structural undercount. A month that
+  is not published yet is left out entirely (never counted as zero),
+  so Member States are assessed on different latest months; the
+  predictor also drops a last month that is exactly zero while the
+  prior month was substantial. Subtler undercounts are not corrected.
 - **Honest evaluation scope.** Hold-out MAE measures one-step-ahead
   performance on the calculated risk score. It does not measure the
   practical utility of the score for an analyst, nor the statistical
